@@ -130,7 +130,7 @@ function enable_kubefed() {
     else
         helm init --client-only
         helm repo add kubefed-charts https://raw.githubusercontent.com/kubernetes-sigs/kubefed/master/charts
-        helm --kube-context cluster1 install kubefed-charts/kubefed --version=0.1.0-rc2 --name kubefed --namespace ${KUBEFED_NS} --set controllermanager.replicaCount=1
+        helm --kube-context cluster1 install kubefed-charts/kubefed --version=0.1.0-rc3 --name kubefed --namespace ${KUBEFED_NS} --set controllermanager.replicaCount=1
         for i in 1 2 3; do
             kubefedctl join cluster${i} --cluster-context cluster${i} --host-cluster-context cluster1 --v=2
             #master_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cluster${i}-control-plane | head -n 1)
