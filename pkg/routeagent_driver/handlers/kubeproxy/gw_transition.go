@@ -31,7 +31,10 @@ func (kp *SyncHandler) TransitionToNonGateway() error {
 
 	kp.cleanVxSubmarinerRoutes()
 	// If the active Gateway transitions to a new node, we flush the HostNetwork routing table.
-	kp.updateRoutingRulesForHostNetworkSupport(nil, Flush)
+	klog.Infof("The cable driver is %#v", kp)
+	if kp.localCableDriver != "vxlan" {
+		kp.updateRoutingRulesForHostNetworkSupport(nil, Flush)
+	}
 	kp.nonGatewayCleanups()
 	kp.gatewayToNonGatewayTransitionCleanups()
 	err := kp.configureIPRule(Delete)
@@ -66,7 +69,10 @@ func (kp *SyncHandler) TransitionToGateway() error {
 	}
 
 	// Add routes to the new endpoint on the GatewayNode.
-	kp.updateRoutingRulesForHostNetworkSupport(kp.remoteSubnets.Elements(), Add)
+	klog.Infof("The cable driver is %#v", kp)
+	if kp.localCableDriver != "vxlan" {
+		kp.updateRoutingRulesForHostNetworkSupport(kp.remoteSubnets.Elements(), Add)
+	}
 
 	return nil
 }

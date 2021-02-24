@@ -17,7 +17,6 @@ package ipam
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"time"
 
@@ -201,9 +200,6 @@ func (gm *GatewayMonitor) processNextEndpoint() bool {
 		// If the endpoint hostname matches with our hostname, it implies we are on gateway node
 		if endpoint.Spec.Hostname == hostname {
 			klog.V(log.DEBUG).Infof("We are now on GatewayNode %s", endpoint.Spec.PrivateIP)
-			// mtuProbe value of 1 enables PLPMTUD when an ICMP blackhole is detected.
-			// RFC4821 recommends using base mss value of 1024
-			ConfigureTCPMTUProbeValue([]byte("1"), []byte("1024"))
 
 			gm.syncMutex.Lock()
 			if !gm.isGatewayNode {
@@ -213,7 +209,6 @@ func (gm *GatewayMonitor) processNextEndpoint() bool {
 			gm.syncMutex.Unlock()
 		} else {
 			klog.V(log.DEBUG).Infof("We are on non-gatewayNode. GatewayNode ip is %s", endpoint.Spec.PrivateIP)
-
 			gm.syncMutex.Lock()
 			if gm.isGatewayNode {
 				gm.stopIpamController()
@@ -329,22 +324,5 @@ func (gm *GatewayMonitor) stopIpamController() {
 		gm.stopProcessing = nil
 
 		cleanup.ClearGlobalnetChains(gm.ipt)
-	}
-}
-
-func ConfigureTCPMTUProbeValue(mtuProbe, mssValue []byte) {
-	// If we are unable to update the values, just log a warning. Most of the Globalnet
-	// functionality works fine except for one use-case where Pod with HostNetworking
-	// on Gateway node has mtu issues connecting to remoteServices.
-	// We won't ever create tcpMtuProbingProcEntry/tcpBaseMssProcEntry, and its permissions are 644
-	// #nosec G306
-	if err := ioutil.WriteFile(tcpMtuProbingProcEntry, mtuProbe, 0644); err == nil {
-		// #nosec G306
-		err = ioutil.WriteFile(tcpBaseMssProcEntry, mssValue, 0644)
-		if err != nil {
-			klog.Warningf("unable to update value of tcp_base_mss to %s, err: %s", mssValue, err)
-		}
-	} else {
-		klog.Warningf("unable to update value of tcp_mtu_probing to %s, err: %s", mtuProbe, err)
 	}
 }

@@ -131,7 +131,7 @@ func GetLocalEndpoint(submSpec types.SubmarinerSpecification, backendConfig map[
 			PrivateIP:     privateIP,
 			NATEnabled:    submSpec.NatEnabled,
 			Subnets:       localSubnets,
-			Backend:       submSpec.CableDriver,
+			Backend:       "vxlan",
 			BackendConfig: backendConfig,
 		},
 	}

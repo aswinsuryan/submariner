@@ -113,7 +113,10 @@ func (kp *SyncHandler) RemoteEndpointCreated(endpoint *submV1.Endpoint) error {
 		return err
 	}
 	// Add routes to the new endpoint on the GatewayNode.
-	kp.updateRoutingRulesForHostNetworkSupport(endpoint.Spec.Subnets, Add)
+	klog.Infof("The cable driver in endpoint is %#v and in kp is %#v", endpoint, kp)
+	if kp.localCableDriver != "vxlan" {
+		kp.updateRoutingRulesForHostNetworkSupport(endpoint.Spec.Subnets, Add)
+	}
 	kp.updateIptableRulesForInterClusterTraffic(endpoint.Spec.Subnets, Add)
 
 	return nil
@@ -137,8 +140,10 @@ func (kp *SyncHandler) RemoteEndpointRemoved(endpoint *submV1.Endpoint) error {
 			err, endpoint)
 		return err
 	}
-
-	kp.updateRoutingRulesForHostNetworkSupport(endpoint.Spec.Subnets, Delete)
+	klog.Infof("The cable driver in endpoint is %#v and in kp is %#v", endpoint, kp)
+	if kp.localCableDriver != "vxlan" {
+		kp.updateRoutingRulesForHostNetworkSupport(endpoint.Spec.Subnets, Delete)
+	}
 	kp.updateIptableRulesForInterClusterTraffic(endpoint.Spec.Subnets, Delete)
 
 	return nil

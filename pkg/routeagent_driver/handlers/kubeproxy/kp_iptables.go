@@ -115,7 +115,11 @@ func (kp *SyncHandler) Init() error {
 	}
 
 	// For now we get all the cleanups
-	kp.installCleanupHandlers(cableCleanup.GetCleanupHandlers())
+	if kp.localCableDriver == "vxlan" {
+
+	} else {
+		kp.installCleanupHandlers(cableCleanup.GetCleanupHandlers())
+	}
 
 	return nil
 }
