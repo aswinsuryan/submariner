@@ -12,7 +12,7 @@ require (
 	github.com/ovn-org/libovsdb v0.6.1-0.20220427123326-d7b273399db4
 	github.com/ovn-org/ovn-kubernetes/go-controller v0.0.0-20220511131059-ac1ce4691c0f
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus-community/pro-bing v0.1.0
+	github.com/prometheus-community/pro-bing v0.2.0
 	github.com/prometheus/client_golang v1.15.1
 	github.com/submariner-io/admiral v0.15.0-m4.0.20230407150416-a578003622bf
 	github.com/submariner-io/shipyard v0.15.0-m4
