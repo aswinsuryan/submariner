@@ -34,7 +34,7 @@ var _ = Describe("GatewayRouteHandler", func() {
 	t := newTestDriver()
 
 	JustBeforeEach(func() {
-		t.Start(ovn.NewGatewayRouteHandler(t.submClient))
+		t.Start(ovn.NewGatewayRouteHandler(t.submClient, ""))
 	})
 
 	awaitGatewayRoute := func(ep *submarinerv1.Endpoint) {

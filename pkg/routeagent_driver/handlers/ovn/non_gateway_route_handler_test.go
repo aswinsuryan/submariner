@@ -34,7 +34,7 @@ var _ = Describe("NonGatewayRouteHandler", func() {
 	t := newTestDriver()
 
 	JustBeforeEach(func() {
-		t.Start(ovn.NewNonGatewayRouteHandler(t.submClient, t.k8sClient))
+		t.Start(ovn.NewNonGatewayRouteHandler(t.submClient, t.k8sClient, ""))
 	})
 
 	awaitNonGatewayRoute := func(ep *submarinerv1.Endpoint) {

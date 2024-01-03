@@ -20,11 +20,9 @@ package ovn
 
 import (
 	"context"
-
 	"github.com/pkg/errors"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/resource"
-	"github.com/submariner-io/admiral/pkg/util"
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	submarinerClientset "github.com/submariner-io/submariner/pkg/client/clientset/versioned"
 	"github.com/submariner-io/submariner/pkg/cni"
@@ -35,13 +33,15 @@ import (
 
 type GatewayRouteHandler struct {
 	event.HandlerBase
-	smClient  submarinerClientset.Interface
-	nextHopIP string
+	smClient          submarinerClientset.Interface
+	nextHopIP         string
+	operatorNamespace string
 }
 
-func NewGatewayRouteHandler(smClientSet submarinerClientset.Interface) *GatewayRouteHandler {
+func NewGatewayRouteHandler(smClientSet submarinerClientset.Interface, namespace string) *GatewayRouteHandler {
 	return &GatewayRouteHandler{
-		smClient: smClientSet,
+		smClient:          smClientSet,
+		operatorNamespace: namespace,
 	}
 }
 
@@ -55,7 +55,7 @@ func (h *GatewayRouteHandler) Init() error {
 
 	h.nextHopIP = nextHopIP
 
-	return nil
+	return err
 }
 
 func (h *GatewayRouteHandler) GetName() string {
@@ -68,6 +68,7 @@ func (h *GatewayRouteHandler) GetNetworkPlugins() []string {
 
 func (h *GatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.Endpoint) error {
 	if h.State().IsOnGateway() {
+		logger.Infof("Received endpoint %q created event on a gateway node", endpoint.Name)
 		_, err := h.smClient.SubmarinerV1().GatewayRoutes(endpoint.Namespace).Create(context.TODO(),
 			h.newGatewayRoute(endpoint), metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -80,6 +81,7 @@ func (h *GatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.Endpo
 
 func (h *GatewayRouteHandler) RemoteEndpointRemoved(endpoint *submarinerv1.Endpoint) error {
 	if h.State().IsOnGateway() {
+		logger.Info("Received endpoint %q deleted event on a gateway node", endpoint.Name)
 		if err := h.smClient.SubmarinerV1().GatewayRoutes(endpoint.Namespace).Delete(context.TODO(),
 			endpoint.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return errors.Wrapf(err, "error deleting gatewayRoute %q", endpoint.Name)
@@ -90,17 +92,40 @@ func (h *GatewayRouteHandler) RemoteEndpointRemoved(endpoint *submarinerv1.Endpo
 }
 
 func (h *GatewayRouteHandler) TransitionToGateway() error {
-	endpoints := h.State().GetRemoteEndpoints()
-	for i := range endpoints {
-		gwr := h.newGatewayRoute(&endpoints[i])
+	logger.Infof("Transitioning to gateway resetting GatewayRoutes")
 
-		result, err := util.CreateOrUpdate(context.TODO(), GatewayResourceInterface(h.smClient, endpoints[i].Namespace),
-			gwr, util.Replace(gwr))
-		if err != nil {
-			return errors.Wrapf(err, "error creating/updating GatewayRoute")
+	gatewayRouteList, err := h.smClient.SubmarinerV1().GatewayRoutes(h.operatorNamespace).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error listing the GatewayRoutes")
+	}
+	if gatewayRouteList != nil && len(gatewayRouteList.Items) != 0 {
+		logger.Infof("Transitioning to gateway deleting the existing GatewayRoutes")
+
+		items := gatewayRouteList.Items
+		for i := range items {
+			if err := h.smClient.SubmarinerV1().GatewayRoutes(items[i].Namespace).Delete(context.TODO(),
+				items[i].Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				return errors.Wrapf(err, "error deleting GatewayRoute %q", items[i].Name)
+			}
 		}
+	}
 
-		logger.V(log.TRACE).Infof("GatewayRoute %s: %#v", result, gwr)
+	endpoints := h.State().GetRemoteEndpoints()
+	logger.Infof("The endpoint list is %v", endpoints)
+	if len(endpoints) != 0 {
+		logger.Infof("Transitioning to gateway creating the GatewayRoutes")
+
+		for i := range endpoints {
+			gwr := h.newGatewayRoute(&endpoints[i])
+
+			result, err := h.smClient.SubmarinerV1().GatewayRoutes(endpoints[i].Namespace).Create(context.TODO(),
+				h.newGatewayRoute(&endpoints[i]), metav1.CreateOptions{})
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				return errors.Wrapf(err, "error creating Gatewayroute  for %q", endpoints[i].Name)
+			}
+
+			logger.V(log.TRACE).Infof("GatewayRoute %s: %#v", result, gwr)
+		}
 	}
 
 	return nil

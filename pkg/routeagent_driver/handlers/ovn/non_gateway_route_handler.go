@@ -24,7 +24,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/resource"
-	"github.com/submariner-io/admiral/pkg/util"
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	submarinerClientset "github.com/submariner-io/submariner/pkg/client/clientset/versioned"
 	"github.com/submariner-io/submariner/pkg/cni"
@@ -38,15 +37,17 @@ import (
 
 type NonGatewayRouteHandler struct {
 	event.HandlerBase
-	smClient        submarinerClientset.Interface
-	k8sClient       clientset.Interface
-	transitSwitchIP string
+	smClient          submarinerClientset.Interface
+	k8sClient         clientset.Interface
+	transitSwitchIP   string
+	operatorNamespace string
 }
 
-func NewNonGatewayRouteHandler(smClient submarinerClientset.Interface, k8sClient clientset.Interface) *NonGatewayRouteHandler {
+func NewNonGatewayRouteHandler(smClient submarinerClientset.Interface, k8sClient clientset.Interface, namespace string) *NonGatewayRouteHandler {
 	return &NonGatewayRouteHandler{
-		smClient:  smClient,
-		k8sClient: k8sClient,
+		smClient:          smClient,
+		k8sClient:         k8sClient,
+		operatorNamespace: namespace,
 	}
 }
 
@@ -85,6 +86,7 @@ func (h *NonGatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.En
 		return nil
 	}
 
+	logger.Infof("Received endpoint %q created event on a gateway node", endpoint.Name)
 	_, err := h.smClient.SubmarinerV1().
 		NonGatewayRoutes(endpoint.Namespace).Create(context.TODO(),
 		h.newNonGatewayRoute(endpoint), metav1.CreateOptions{})
@@ -100,6 +102,7 @@ func (h *NonGatewayRouteHandler) RemoteEndpointRemoved(endpoint *submarinerv1.En
 		return nil
 	}
 
+	logger.Infof("Received endpoint %q removed event on a gateway node", endpoint.Name)
 	if err := h.smClient.SubmarinerV1().NonGatewayRoutes(endpoint.Namespace).Delete(context.TODO(),
 		endpoint.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return errors.Wrapf(err, "error deleting nonGatewayRoute %q", endpoint.Name)
@@ -113,17 +116,36 @@ func (h *NonGatewayRouteHandler) TransitionToGateway() error {
 		return nil
 	}
 
-	endpoints := h.State().GetRemoteEndpoints()
-	for i := range endpoints {
-		ngwr := h.newNonGatewayRoute(&endpoints[i])
+	logger.Infof("Transitioning to gateway resetting NonGatewayRoutes")
+	nonGatewayRouteList, err := h.smClient.SubmarinerV1().NonGatewayRoutes(h.operatorNamespace).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return errors.Wrapf(err, "error listing the NonGatewayRoutes")
+	}
+	if nonGatewayRouteList != nil && len(nonGatewayRouteList.Items) != 0 {
+		logger.Infof("Deleting the existing NonGatewayRoutes")
 
-		result, err := util.CreateOrUpdate(context.TODO(), NonGatewayResourceInterface(h.smClient, endpoints[i].Namespace),
-			ngwr, util.Replace(ngwr))
-		if err != nil {
-			return errors.Wrapf(err, "error creating/updating NonGatewayRoute")
+		items := nonGatewayRouteList.Items
+		for i := range items {
+			if err := h.smClient.SubmarinerV1().NonGatewayRoutes(items[i].Namespace).Delete(context.TODO(),
+				items[i].Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+				return errors.Wrapf(err, "error deleting NonGatewayRoute %q", items[i].Name)
+			}
 		}
+	}
 
-		logger.V(log.TRACE).Infof("NonGatewayRoute %s: %#v", result, ngwr)
+	endpoints := h.State().GetRemoteEndpoints()
+	if len(endpoints) != 0 {
+		logger.Infof("Creating new NonGatewayRoutes")
+		for i := range endpoints {
+			ngwr, err := h.smClient.SubmarinerV1().
+				NonGatewayRoutes(endpoints[i].Namespace).Create(context.TODO(),
+				h.newNonGatewayRoute(&endpoints[i]), metav1.CreateOptions{})
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				return errors.Wrapf(err, "error creating NonGatewayRoutes for %q", endpoints[i].Name)
+			}
+
+			logger.V(log.TRACE).Infof("NonGatewayRoute is created %s: %#v", ngwr)
+		}
 	}
 
 	return nil
