@@ -45,9 +45,11 @@ import (
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/cabledriver"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/environment"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/calico"
+	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/healthchecker"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/kubeproxy"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/mtu"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/ovn"
+	"github.com/submariner-io/submariner/pkg/types"
 	"github.com/submariner-io/submariner/pkg/versions"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/dynamic"
@@ -110,8 +112,11 @@ func main() {
 	restMapper, err := util.BuildRestMapper(cfg)
 	logger.FatalOnError(err, "Error building the REST mapper")
 
+	localNode, err := node.GetLocalNode(k8sClientSet)
+	logger.FatalOnError(err, "Error getting information on the local node")
+
 	if env.WaitForNode {
-		waitForNodeReady(k8sClientSet)
+		waitForNodeReady(localNode)
 
 		return
 	}
@@ -126,8 +131,20 @@ func main() {
 	}
 
 	transitSwitchIP := ovn.NewTransitSwitchIP()
+	submSpec := types.SubmarinerSpecification{}
+	logger.FatalOnError(envconfig.Process("submariner", &submSpec), "Error processing env vars")
 
 	config := &watcher.Config{RestConfig: cfg}
+
+	healthcheckerConfig := &healthchecker.Config{
+		PingInterval:         submSpec.HealthCheckInterval * 60,
+		MaxPacketLossCount:   submSpec.HealthCheckMaxPacketLossCount,
+		HealthCheckerEnabled: submSpec.HealthCheckEnabled,
+	}
+
+	if err != nil {
+		logger.Errorf(err, "Error creating healthChecker")
+	}
 
 	registry, err := event.NewRegistry("routeagent_driver", np,
 		kubeproxy.NewSyncHandler(env.ClusterCidr, env.ServiceCidr),
@@ -145,8 +162,10 @@ func main() {
 		ovn.NewNonGatewayRouteHandler(smClientset, k8sClientSet, transitSwitchIP),
 		cabledriver.NewXRFMCleanupHandler(),
 		cabledriver.NewVXLANCleanup(),
-		mtu.NewMTUHandler(env.ClusterCidr, len(env.GlobalCidr) != 0, getTCPMssValue(k8sClientSet)),
-		calico.NewCalicoIPPoolHandler(cfg, env.Namespace, k8sClientSet))
+		mtu.NewMTUHandler(env.ClusterCidr, len(env.GlobalCidr) != 0, getTCPMssValue(localNode)),
+		calico.NewCalicoIPPoolHandler(cfg, env.Namespace, k8sClientSet),
+		healthchecker.NewHealthCheckerHandler(healthcheckerConfig,
+			smClientset.SubmarinerV1().RouteAgents(submSpec.Namespace), versions.Submariner(), localNode.Name))
 
 	logger.FatalOnError(err, "Error registering the handlers")
 
@@ -181,13 +200,7 @@ func init() {
 	flag.BoolVar(&showVersion, "version", showVersion, "Show version")
 }
 
-func getTCPMssValue(k8sClientSet *kubernetes.Clientset) int {
-	localNode, err := node.GetLocalNode(k8sClientSet)
-	if err != nil {
-		logger.Errorf(err, "Error getting information on the local node")
-		return 0
-	}
-
+func getTCPMssValue(localNode *corev1.Node) int {
 	tcpMssStr := localNode.GetAnnotations()[v1.TCPMssValue]
 
 	if tcpMssStr == "" {
@@ -213,14 +226,10 @@ func uninstall(registry *event.Registry) {
 	}
 }
 
-func waitForNodeReady(k8sClientSet *kubernetes.Clientset) {
+func waitForNodeReady(localNode *corev1.Node) {
 	// In most cases the node will already be ready; otherwise, wait for ever
 	for {
-		localNode, err := node.GetLocalNode(k8sClientSet)
-
-		if err != nil {
-			logger.Error(err, "Error retrieving local node")
-		} else if localNode != nil {
+		if localNode != nil {
 			_, condition := nodeutil.GetNodeCondition(&localNode.Status, corev1.NodeReady)
 			if condition != nil && condition.Status == corev1.ConditionTrue {
 				logger.Info("Node ready")
