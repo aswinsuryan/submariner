@@ -20,6 +20,8 @@ package main
 
 import (
 	"flag"
+	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/healthchecker"
+	"github.com/submariner-io/submariner/pkg/types"
 	"io/fs"
 	"os"
 	"strconv"
@@ -126,7 +128,22 @@ func main() {
 		np = cni.Generic
 	}
 
+	submSpec := types.SubmarinerSpecification{}
+	logger.FatalOnError(envconfig.Process("submariner", &submSpec), "Error processing env vars")
+
 	config := &watcher.Config{RestConfig: cfg}
+
+	healthcheckerConfig := &healthchecker.Config{
+		WatcherConfig:      config,
+		EndpointNamespace:  submSpec.Namespace,
+		ClusterID:          submSpec.ClusterID,
+		PingInterval:       submSpec.HealthCheckInterval * 60,
+		MaxPacketLossCount: submSpec.HealthCheckMaxPacketLossCount,
+	}
+
+	if err != nil {
+		logger.Errorf(err, "Error creating healthChecker")
+	}
 
 	registry, err := event.NewRegistry("routeagent_driver", np,
 		kubeproxy.NewSyncHandler(env.ClusterCidr, env.ServiceCidr),
@@ -144,7 +161,8 @@ func main() {
 		cabledriver.NewXRFMCleanupHandler(),
 		cabledriver.NewVXLANCleanup(),
 		mtu.NewMTUHandler(env.ClusterCidr, len(env.GlobalCidr) != 0, getTCPMssValue(k8sClientSet)),
-		calico.NewCalicoIPPoolHandler(cfg, env.Namespace, k8sClientSet))
+		calico.NewCalicoIPPoolHandler(cfg, env.Namespace, k8sClientSet),
+		healthchecker.NewHealthCheckerHandler(healthcheckerConfig))
 
 	logger.FatalOnError(err, "Error registering the handlers")
 

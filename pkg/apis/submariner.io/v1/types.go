@@ -180,9 +180,10 @@ type Connection struct {
 type ConnectionStatus string
 
 const (
-	Connected       ConnectionStatus = "connected"
-	Connecting      ConnectionStatus = "connecting"
-	ConnectionError ConnectionStatus = "error"
+	Connected                 ConnectionStatus = "connected"
+	Connecting                ConnectionStatus = "connecting"
+	ConnectionError           ConnectionStatus = "error"
+	ConnectionRouteAgentError ConnectionStatus = "route-agent-error"
 )
 
 func NewConnection(endpointSpec *EndpointSpec, usedIP string, nat bool) *Connection {

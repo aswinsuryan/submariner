@@ -137,7 +137,7 @@ func verifyGateway(gw *submarinerv1.Gateway, otherCluster string, healthCheckedE
 			}
 
 			if gw.Status.Connections[i].LatencyRTT.StdDev == "" {
-				return false, fmt.Sprintf("Connection for cluster %q is missing StdDev RTT data", otherCluster), nil
+				return false, fmt.Sprintf("Connection for cluster %q is missing stdDev RTT data", otherCluster), nil
 			}
 		}
 

@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package healthchecker_test
+package pinger_test
 
 import (
 	"errors"
@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/gomega"
 	probing "github.com/prometheus-community/pro-bing"
 	"github.com/submariner-io/submariner/pkg/cableengine/healthchecker"
+	"github.com/submariner-io/submariner/pkg/pinger"
 )
 
 /*
@@ -38,11 +39,11 @@ accordingly.
 */
 var _ = Describe("Pinger", func() {
 	var (
-		pinger       healthchecker.PingerInterface
-		ip           string
-		pingInterval time.Duration
-		pingTimeout  time.Duration
-		testsEnabled bool
+		pingerInterface pinger.PingerInterface
+		ip              string
+		pingInterval    time.Duration
+		pingTimeout     time.Duration
+		testsEnabled    bool
 	)
 
 	testsEnabled = func() bool {
@@ -55,7 +56,7 @@ var _ = Describe("Pinger", func() {
 
 			p.Count = 1
 			p.Timeout = 50 * time.Millisecond
-			p.SetPrivileged(healthchecker.Privileged)
+			p.SetPrivileged(pinger.Privileged)
 
 			return p.Run()
 		}()
@@ -86,16 +87,16 @@ var _ = Describe("Pinger", func() {
 	})
 
 	JustBeforeEach(func() {
-		pinger = healthchecker.NewPinger(healthchecker.PingerConfig{
+		pingerInterface = pinger.NewPinger(pinger.PingerConfig{
 			IP:       ip,
 			Interval: pingInterval,
 			Timeout:  pingTimeout,
 		})
-		pinger.Start()
+		pingerInterface.Start()
 	})
 
 	AfterEach(func() {
-		pinger.Stop()
+		pingerInterface.Stop()
 	})
 
 	verifyPingStats := func(count int) {
@@ -105,7 +106,7 @@ var _ = Describe("Pinger", func() {
 			var current *healthchecker.LatencyInfo
 
 			Eventually(func() *healthchecker.LatencyInfo {
-				current = pinger.GetLatencyInfo()
+				current = pingerInterface.GetLatencyInfo()
 				return current
 			}, pingInterval*2).ShouldNot(Equal(last))
 
@@ -127,7 +128,7 @@ var _ = Describe("Pinger", func() {
 
 		It("should mark a failure", func() {
 			Eventually(func() string {
-				return pinger.GetLatencyInfo().ConnectionError
+				return pingerInterface.GetLatencyInfo().ConnectionError
 			}, 5*time.Second).Should(Not(BeEmpty()))
 		})
 	})
@@ -150,15 +151,15 @@ var _ = Describe("Pinger", func() {
 
 		It("should no longer update the statistics", func() {
 			Eventually(func() string {
-				return pinger.GetLatencyInfo().Spec.Last
+				return pingerInterface.GetLatencyInfo().Spec.Last
 			}, 3).ShouldNot(BeEmpty())
 
-			pinger.Stop()
+			pingerInterface.Stop()
 
 			time.Sleep(pingInterval * 2)
 
-			current := pinger.GetLatencyInfo()
-			Consistently(pinger.GetLatencyInfo, pingInterval*10).Should(Equal(current))
+			current := pingerInterface.GetLatencyInfo()
+			Consistently(pingerInterface.GetLatencyInfo, pingInterval*10).Should(Equal(current))
 		})
 	})
 })

@@ -26,27 +26,14 @@ import (
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/watcher"
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
+	"github.com/submariner-io/submariner/pkg/pinger"
 	"k8s.io/apimachinery/pkg/runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type LatencyInfo struct {
-	ConnectionError  string
-	ConnectionStatus ConnectionStatus
-	Spec             *submarinerv1.LatencyRTTSpec
-}
-
-type ConnectionStatus string
-
-const (
-	Connected         ConnectionStatus = "connected"
-	ConnectionUnknown ConnectionStatus = "unknown"
-	ConnectionError   ConnectionStatus = "error"
-)
-
 type Interface interface {
 	Start(stopCh <-chan struct{}) error
-	GetLatencyInfo(endpoint *submarinerv1.EndpointSpec) *LatencyInfo
+	GetLatencyInfo(endpoint *submarinerv1.EndpointSpec) *pinger.LatencyInfo
 	Stop()
 }
 
@@ -56,12 +43,12 @@ type Config struct {
 	ClusterID          string
 	PingInterval       uint
 	MaxPacketLossCount uint
-	NewPinger          func(PingerConfig) PingerInterface
+	NewPinger          func(pinger.PingerConfig) pinger.PingerInterface
 }
 
 type controller struct {
 	sync.RWMutex
-	pingers map[string]PingerInterface
+	pingers map[string]pinger.PingerInterface
 	config  *Config
 }
 
@@ -70,7 +57,7 @@ var logger = log.Logger{Logger: logf.Log.WithName("HealthChecker")}
 func New(config *Config) (Interface, error) {
 	controller := &controller{
 		config:  config,
-		pingers: map[string]PingerInterface{},
+		pingers: map[string]pinger.PingerInterface{},
 	}
 
 	config.WatcherConfig.ResourceConfigs = []watcher.ResourceConfig{
@@ -89,7 +76,7 @@ func New(config *Config) (Interface, error) {
 	return controller, nil
 }
 
-func (h *controller) GetLatencyInfo(endpoint *submarinerv1.EndpointSpec) *LatencyInfo {
+func (h *controller) GetLatencyInfo(endpoint *submarinerv1.EndpointSpec) *pinger.LatencyInfo {
 	h.RLock()
 	defer h.RUnlock()
 
@@ -124,7 +111,7 @@ func (h *controller) Stop() {
 		p.Stop()
 	}
 
-	h.pingers = map[string]PingerInterface{}
+	h.pingers = map[string]pinger.PingerInterface{}
 }
 
 func (h *controller) endpointCreatedOrUpdated(obj runtime.Object, _ int) bool {
@@ -154,7 +141,7 @@ func (h *controller) endpointCreatedOrUpdated(obj runtime.Object, _ int) bool {
 		delete(h.pingers, endpointCreated.Spec.CableName)
 	}
 
-	pingerConfig := PingerConfig{
+	pingerConfig := pinger.PingerConfig{
 		IP:                 endpointCreated.Spec.HealthCheckIP,
 		MaxPacketLossCount: h.config.MaxPacketLossCount,
 	}
@@ -165,7 +152,7 @@ func (h *controller) endpointCreatedOrUpdated(obj runtime.Object, _ int) bool {
 
 	newPingerFunc := h.config.NewPinger
 	if newPingerFunc == nil {
-		newPingerFunc = NewPinger
+		newPingerFunc = pinger.NewPinger
 	}
 
 	pinger := newPingerFunc(pingerConfig)

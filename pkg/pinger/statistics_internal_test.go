@@ -16,14 +16,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package healthchecker
+package pinger
 
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Statistics", func() {
+var _ = Describe("statistics", func() {
 	const (
 		testMinRTT     = 404351
 		testMaxRTT     = 1048263
