@@ -28,7 +28,7 @@ require (
 	k8s.io/component-helpers v0.30.3
 	k8s.io/utils v0.0.0-20230726121419-3b25d923346b
 	sigs.k8s.io/controller-runtime v0.18.4
-	sigs.k8s.io/knftables v0.0.16
+	sigs.k8s.io/knftables v0.0.17
 	sigs.k8s.io/mcs-api v0.1.0
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1
 )
