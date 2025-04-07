@@ -26,12 +26,12 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/vishvananda/netlink"
+	k8snet "k8s.io/utils/net"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -42,7 +42,7 @@ type Basic interface {
 	LinkSetUp(link netlink.Link) error
 	AddrAdd(link netlink.Link, addr *netlink.Addr) error
 	AddrDel(link netlink.Link, addr *netlink.Addr) error
-	AddrList(link netlink.Link, family int) ([]netlink.Addr, error)
+	AddrList(link netlink.Link, family k8snet.IPFamily) ([]netlink.Addr, error)
 	AddrSubscribe(addrCh chan netlink.AddrUpdate, doneCh chan struct{}) error
 	NeighAppend(neigh *netlink.Neigh) error
 	NeighDel(neigh *netlink.Neigh) error
@@ -50,14 +50,14 @@ type Basic interface {
 	RouteDel(route *netlink.Route) error
 	RouteReplace(route *netlink.Route) error
 	RouteGet(destination net.IP) ([]netlink.Route, error)
-	RouteList(link netlink.Link, family int) ([]netlink.Route, error)
+	RouteList(link netlink.Link, family k8snet.IPFamily) ([]netlink.Route, error)
 	FlushRouteTable(tableID int) error
 	RuleAdd(rule *netlink.Rule) error
 	RuleDel(rule *netlink.Rule) error
-	RuleList(family int) ([]netlink.Rule, error)
+	RuleList(family k8snet.IPFamily) ([]netlink.Rule, error)
 	XfrmPolicyAdd(policy *netlink.XfrmPolicy) error
 	XfrmPolicyDel(policy *netlink.XfrmPolicy) error
-	XfrmPolicyList(family int) ([]netlink.XfrmPolicy, error)
+	XfrmPolicyList(family k8snet.IPFamily) ([]netlink.XfrmPolicy, error)
 	EnableLooseModeReversePathFilter(interfaceName string) error
 	EnsureLooseModeIsConfigured(interfaceName string) error
 	EnableForwarding(interfaceName string) error
@@ -118,8 +118,8 @@ func (n *netlinkType) AddrDel(link netlink.Link, addr *netlink.Addr) error {
 	return netlink.AddrDel(link, addr)
 }
 
-func (n *netlinkType) AddrList(link netlink.Link, family int) ([]netlink.Addr, error) {
-	return netlink.AddrList(link, family)
+func (n *netlinkType) AddrList(link netlink.Link, family k8snet.IPFamily) ([]netlink.Addr, error) {
+	return netlink.AddrList(link, ToNetlinkFamily(family))
 }
 
 func (n *netlinkType) AddrSubscribe(addrCh chan netlink.AddrUpdate, doneCh chan struct{}) error {
@@ -150,8 +150,8 @@ func (n *netlinkType) RouteGet(destination net.IP) ([]netlink.Route, error) {
 	return netlink.RouteGet(destination)
 }
 
-func (n *netlinkType) RouteList(link netlink.Link, family int) ([]netlink.Route, error) {
-	return netlink.RouteList(link, family)
+func (n *netlinkType) RouteList(link netlink.Link, family k8snet.IPFamily) ([]netlink.Route, error) {
+	return netlink.RouteList(link, ToNetlinkFamily(family))
 }
 
 func (n *netlinkType) RuleAdd(rule *netlink.Rule) error {
@@ -162,8 +162,8 @@ func (n *netlinkType) RuleDel(rule *netlink.Rule) error {
 	return netlink.RuleDel(rule)
 }
 
-func (n *netlinkType) RuleList(family int) ([]netlink.Rule, error) {
-	return netlink.RuleList(family)
+func (n *netlinkType) RuleList(family k8snet.IPFamily) ([]netlink.Rule, error) {
+	return netlink.RuleList(ToNetlinkFamily(family))
 }
 
 func (n *netlinkType) XfrmPolicyAdd(policy *netlink.XfrmPolicy) error {
@@ -174,8 +174,8 @@ func (n *netlinkType) XfrmPolicyDel(policy *netlink.XfrmPolicy) error {
 	return netlink.XfrmPolicyDel(policy)
 }
 
-func (n *netlinkType) XfrmPolicyList(family int) ([]netlink.XfrmPolicy, error) {
-	return netlink.XfrmPolicyList(family)
+func (n *netlinkType) XfrmPolicyList(family k8snet.IPFamily) ([]netlink.XfrmPolicy, error) {
+	return netlink.XfrmPolicyList(ToNetlinkFamily(family))
 }
 
 func (n *netlinkType) EnableLooseModeReversePathFilter(interfaceName string) error {
@@ -270,8 +270,8 @@ func ipv4ConfPath(interfaceName string) string {
 }
 
 //nolint:wrapcheck // Let the caller wrap external errors
-func GetDefaultGatewayInterface() (*net.Interface, error) {
-	routes, err := netlink.RouteList(nil, syscall.AF_INET)
+func GetDefaultGatewayInterface(family k8snet.IPFamily) (*net.Interface, error) {
+	routes, err := netlink.RouteList(nil, ToNetlinkFamily(family))
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func DeleteIfaceAndAssociatedRoutes(iface string, tableID int) error {
 		return nil
 	}
 
-	currentRouteList, err := n.RouteList(link, syscall.AF_INET)
+	currentRouteList, err := n.RouteList(link, k8snet.IPv4)
 
 	if err != nil {
 		logger.Warningf("Unable to cleanup routes, error retrieving routes on the link %s: %v", iface, err)
@@ -331,10 +331,10 @@ func DeleteIfaceAndAssociatedRoutes(iface string, tableID int) error {
 	return nil
 }
 
-func DeleteXfrmRules() error {
+func DeleteXfrmRules(family k8snet.IPFamily) error {
 	n := New()
 
-	currentXfrmPolicyList, err := n.XfrmPolicyList(syscall.AF_INET)
+	currentXfrmPolicyList, err := n.XfrmPolicyList(family)
 	if err != nil {
 		return errors.Wrap(err, "error retrieving current xfrm policies")
 	}
@@ -367,4 +367,17 @@ func NewTableRule(tableID int) *netlink.Rule {
 	rule.Priority = tableID
 
 	return rule
+}
+
+func ToNetlinkFamily(family k8snet.IPFamily) int {
+	switch family {
+	case k8snet.IPv4:
+		return netlink.FAMILY_V4
+	case k8snet.IPv6:
+		return netlink.FAMILY_V6
+	case k8snet.IPFamilyUnknown:
+		return netlink.FAMILY_ALL
+	}
+
+	return netlink.FAMILY_ALL
 }

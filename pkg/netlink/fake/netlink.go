@@ -32,6 +32,7 @@ import (
 	"github.com/submariner-io/admiral/pkg/slices"
 	netlinkAPI "github.com/submariner-io/submariner/pkg/netlink"
 	"github.com/vishvananda/netlink"
+	k8snet "k8s.io/utils/net"
 )
 
 type linkType struct {
@@ -197,7 +198,7 @@ func (n *basicType) AddrDel(link netlink.Link, addr *netlink.Addr) error {
 	return nil
 }
 
-func (n *basicType) AddrList(link netlink.Link, _ int) ([]netlink.Addr, error) {
+func (n *basicType) AddrList(link netlink.Link, _ k8snet.IPFamily) ([]netlink.Addr, error) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
@@ -332,7 +333,7 @@ func (n *basicType) RouteGet(destination net.IP) ([]netlink.Route, error) {
 	return routes, nil
 }
 
-func (n *basicType) RouteList(link netlink.Link, _ int) ([]netlink.Route, error) {
+func (n *basicType) RouteList(link netlink.Link, _ k8snet.IPFamily) ([]netlink.Route, error) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
@@ -402,14 +403,14 @@ func (n *basicType) RuleDel(rule *netlink.Rule) error {
 	return nil
 }
 
-func (n *basicType) RuleList(family int) ([]netlink.Rule, error) {
+func (n *basicType) RuleList(family k8snet.IPFamily) ([]netlink.Rule, error) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
 	var rules []netlink.Rule
 	for _, r := range n.rules {
 		for i := range r {
-			if r[i].Family == family {
+			if r[i].Family == netlinkAPI.ToNetlinkFamily(family) {
 				rules = append(rules, r[i])
 			}
 		}
@@ -426,7 +427,7 @@ func (n *basicType) XfrmPolicyDel(_ *netlink.XfrmPolicy) error {
 	return nil
 }
 
-func (n *basicType) XfrmPolicyList(_ int) ([]netlink.XfrmPolicy, error) {
+func (n *basicType) XfrmPolicyList(_ k8snet.IPFamily) ([]netlink.XfrmPolicy, error) {
 	return []netlink.XfrmPolicy{}, nil
 }
 
@@ -491,7 +492,7 @@ func routeList[T any](n *NetLink, linkIndex, table int, f func(r *netlink.Route)
 		LinkAttrs: netlink.LinkAttrs{
 			Index: linkIndex,
 		},
-	}, 0)
+	}, k8snet.IPFamilyUnknown)
 
 	result := []T{}
 
