@@ -49,12 +49,18 @@ var _ = Describe("GatewayRouteHandler", func() {
 			t.CreateLocalHostEndpoint()
 		})
 
-		It("should create/delete a GatewayRoute", func() {
-			endpoint := t.CreateEndpoint(testing.NewEndpoint("remote-cluster1", "host", "192.0.4.0/24"))
-			awaitGatewayRoute(endpoint)
+		It("should create/delete GatewayRoutes for both IP families", func() {
+			endpointV4 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v4", "host", "192.0.4.0/24"))
+			endpointV6 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v6", "host", "192.0.4.0/24", "fd00:100::/64"))
 
-			t.DeleteEndpoint(endpoint.Name)
-			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpoint.Spec.ClusterID)
+			awaitGatewayRoute(endpointV4)
+			awaitGatewayRoute(endpointV6)
+
+			t.DeleteEndpoint(endpointV4.Name)
+			t.DeleteEndpoint(endpointV6.Name)
+
+			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpointV4.Spec.ClusterID)
+			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpointV6.Spec.ClusterID)
 		})
 
 		Context("and the GatewayRoute operations initially fail", func() {
