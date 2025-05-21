@@ -67,6 +67,7 @@ var _ = Describe("GetLocalSpec", func() {
 		ipv6CIDR            = cniInterfaceIPv6 + "/64"
 		ipv4LocalIP         = "1.2.3.4"
 		ipv6LocalIP         = "2001:0:0:4321::"
+		globalnetCIDR       = "242.10.0.0/24"
 	)
 
 	BeforeEach(func() {
@@ -173,6 +174,18 @@ var _ = Describe("GetLocalSpec", func() {
 			Expect(spec.PrivateIPs).To(ContainElements(ipv4LocalIP, ipv6LocalIP))
 			Expect(spec.PrivateIPs).To(HaveLen(2))
 		})
+
+		Context("and globalnet enabled", func() {
+			BeforeEach(func() {
+				submSpec.GlobalCidr = []string{globalnetCIDR}
+			})
+
+			It("should add the IPv6 CIDRs to the subnets", func() {
+				spec, err := endpoint.GetLocalSpec(context.TODO(), submSpec, client, true)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(spec.Subnets).To(HaveExactElements(globalnetCIDR, ipv6CIDR))
+			})
+		})
 	})
 
 	When("the gateway node is not annotated with udp port", func() {
@@ -246,11 +259,23 @@ var _ = Describe("GetLocalSpec", func() {
 				Expect(spec.HealthCheckIPs).To(ContainElements(cniInterfaceIPv4, cniInterfaceIPv6))
 				Expect(spec.HealthCheckIPs).To(HaveLen(2))
 			})
+
+			Context("and globalnet enabled", func() {
+				BeforeEach(func() {
+					submSpec.GlobalCidr = []string{"242.10.0.0/24"}
+				})
+
+				It("should set the IPv6 HealthCheckIP", func() {
+					spec, err := endpoint.GetLocalSpec(context.TODO(), submSpec, client, true)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(spec.HealthCheckIPs).To(Equal([]string{cniInterfaceIPv6}))
+				})
+			})
 		})
 
 		Context("and globalnet is enabled", func() {
 			BeforeEach(func() {
-				submSpec.GlobalCidr = []string{"242.10.0.0/24"}
+				submSpec.GlobalCidr = []string{globalnetCIDR}
 			})
 
 			It("should not set the HealthCheckIP", func() {

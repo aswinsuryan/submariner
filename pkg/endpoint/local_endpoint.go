@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	"github.com/submariner-io/admiral/pkg/resource"
 	"github.com/submariner-io/admiral/pkg/util"
 	submv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
+	"github.com/submariner-io/submariner/pkg/cidr"
 	"github.com/submariner-io/submariner/pkg/cni"
 	"github.com/submariner-io/submariner/pkg/node"
 	"github.com/submariner-io/submariner/pkg/port"
@@ -151,7 +153,8 @@ func GetLocalSpec(ctx context.Context, submSpec *types.SubmarinerSpecification, 
 	globalnetEnabled := false
 
 	if len(submSpec.GlobalCidr) > 0 {
-		localSubnets = submSpec.GlobalCidr
+		localSubnets = append(slices.Clone(submSpec.GlobalCidr),
+			cidr.ExtractSubnets(k8snet.IPv6, append(submSpec.ServiceCidr, submSpec.ClusterCidr...))...)
 		globalnetEnabled = true
 	} else {
 		localSubnets = append(localSubnets, submSpec.ServiceCidr...)
@@ -193,12 +196,16 @@ func GetLocalSpec(ctx context.Context, submSpec *types.SubmarinerSpecification, 
 		endpointSpec.SetPublicIP(publicIP)
 	}
 
-	if submSpec.HealthCheckEnabled && !globalnetEnabled {
+	if submSpec.HealthCheckEnabled {
 		// When globalnet is enabled, HealthCheckIP will be the globalIP assigned to the Active GatewayNode.
 		// In a fresh deployment, globalIP annotation for the node might take few seconds. So we listen on NodeEvents
 		// and update the endpoint HealthCheckIP (to globalIP) in datastoreSyncer at a later stage. This will trigger
 		// the HealthCheck between the clusters.
 		for _, family := range submSpec.GetIPFamilies() {
+			if globalnetEnabled && family == k8snet.IPv4 {
+				continue
+			}
+
 			healthcheckIP, err := getHealthCheckIP(family, submSpec)
 			if err != nil {
 				return nil, fmt.Errorf("error getting HealthCheckIPv%v: %w", family, err)
