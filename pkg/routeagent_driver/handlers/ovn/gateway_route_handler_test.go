@@ -39,7 +39,7 @@ var _ = Describe("GatewayRouteHandler", func() {
 	})
 
 	awaitGatewayRoute := func(ep *submarinerv1.Endpoint) {
-		gwRoute := test.AwaitResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), ep.Spec.ClusterID)
+		gwRoute := test.AwaitResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), ep.Spec.ClusterID+"-v4")
 		Expect(gwRoute.RoutePolicySpec.RemoteCIDRs).To(Equal(ep.Spec.Subnets))
 		Expect(gwRoute.RoutePolicySpec.NextHops).To(Equal([]string{t.mgmntIntfIP}))
 	}
@@ -49,18 +49,14 @@ var _ = Describe("GatewayRouteHandler", func() {
 			t.CreateLocalHostEndpoint()
 		})
 
-		It("should create/delete GatewayRoutes for both IP families", func() {
+		It("should create/delete GatewayRoutes for Ipv4", func() {
 			endpointV4 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v4", "host", "192.0.4.0/24"))
-			endpointV6 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v6", "host", "192.0.4.0/24", "fd00:100::/64"))
 
 			awaitGatewayRoute(endpointV4)
-			awaitGatewayRoute(endpointV6)
 
 			t.DeleteEndpoint(endpointV4.Name)
-			t.DeleteEndpoint(endpointV6.Name)
 
-			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpointV4.Spec.ClusterID)
-			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpointV6.Spec.ClusterID)
+			test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpointV4.Spec.ClusterID+"-v4")
 		})
 
 		Context("and the GatewayRoute operations initially fail", func() {
@@ -76,7 +72,7 @@ var _ = Describe("GatewayRouteHandler", func() {
 				awaitGatewayRoute(endpoint)
 
 				t.DeleteEndpoint(endpoint.Name)
-				test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpoint.Spec.ClusterID)
+				test.AwaitNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpoint.Spec.ClusterID+"-v4")
 			})
 		})
 	})
@@ -84,7 +80,7 @@ var _ = Describe("GatewayRouteHandler", func() {
 	Context("on transition to gateway", func() {
 		It("should create GatewayRoutes for all remote Endpoints", func() {
 			endpoint := t.CreateEndpoint(testing.NewEndpoint("remote-cluster1", "host", "192.0.4.0/24"))
-			test.EnsureNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpoint.Spec.ClusterID)
+			test.EnsureNoResource(ovn.GatewayResourceInterface(t.submClient, testing.Namespace), endpoint.Spec.ClusterID+"-v4")
 
 			localEndpoint := t.CreateLocalHostEndpoint()
 			awaitGatewayRoute(endpoint)

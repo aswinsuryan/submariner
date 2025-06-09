@@ -83,7 +83,7 @@ var _ = Describe("Handler", func() {
 
 		restMapper := test.GetRESTMapperFor(&submarinerv1.GatewayRoute{}, &submarinerv1.NonGatewayRoute{})
 
-		transitSwitchIP = ovn.NewTransitSwitchIP()
+		transitSwitchIP = ovn.NewTransitSwitchIP(k8snet.IPv4)
 
 		t.Start(ovn.NewHandler(k8snet.IPv4, &ovn.HandlerConfig{
 			Namespace:   testing.Namespace,

@@ -40,6 +40,11 @@ func (ovn *Handler) handleSubnets(remoteSubnets []string, ruleFunc func(rule *ne
 
 	for _, subnetToHandle := range remoteSubnets {
 		for _, localSubnet := range localCIDRs.UnsortedList() {
+			if k8snet.IsIPv6CIDRString(localSubnet) != (ovn.ipFamily == k8snet.IPv6) ||
+				k8snet.IsIPv6CIDRString(subnetToHandle) != (ovn.ipFamily == k8snet.IPv6) {
+				continue
+			}
+
 			rule, err := ovn.getRuleSpec(localSubnet, subnetToHandle, constants.RouteAgentInterClusterNetworkTableID)
 			if err != nil {
 				return errors.Wrapf(err, "error creating rule %#v", rule)
@@ -84,10 +89,10 @@ func (ovn *Handler) getRuleSpec(dest, src string, tableID int) (*netlink.Rule, e
 	return rule, nil
 }
 
-func (ovn *Handler) getExistingIPv4RuleSubnets() (set.Set[string], error) {
+func (ovn *Handler) getExistingRuleSubnets() (set.Set[string], error) {
 	currentRuleRemotes := set.New[string]()
 
-	rules, err := ovn.netLink.RuleList(k8snet.IPv4)
+	rules, err := ovn.netLink.RuleList(ovn.ipFamily)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error listing rules")
 	}

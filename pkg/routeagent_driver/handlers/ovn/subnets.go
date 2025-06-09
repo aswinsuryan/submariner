@@ -18,7 +18,10 @@ limitations under the License.
 
 package ovn
 
-import "k8s.io/utils/set"
+import (
+	k8snet "k8s.io/utils/net"
+	"k8s.io/utils/set"
+)
 
 func (ovn *Handler) getRemoteSubnets() set.Set[string] {
 	endpointSubnets := set.New[string]()
@@ -26,6 +29,10 @@ func (ovn *Handler) getRemoteSubnets() set.Set[string] {
 	endpoints := ovn.State().GetRemoteEndpoints()
 	for i := range endpoints {
 		for _, subnet := range endpoints[i].Spec.Subnets {
+			if k8snet.IsIPv6CIDRString(subnet) != (ovn.ipFamily == k8snet.IPv6) {
+				continue
+			}
+
 			endpointSubnets.Insert(subnet)
 		}
 	}

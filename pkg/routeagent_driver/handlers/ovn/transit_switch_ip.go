@@ -20,6 +20,9 @@ package ovn
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"sync/atomic"
 
@@ -28,6 +31,7 @@ import (
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/constants"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
+	k8snet "k8s.io/utils/net"
 )
 
 type TransitSwitchIPGetter interface {
@@ -41,11 +45,12 @@ type TransitSwitchIP interface {
 }
 
 type transitSwitchIPImpl struct {
-	value atomic.Value
+	value    atomic.Value
+	ipFamily k8snet.IPFamily
 }
 
-func NewTransitSwitchIP() TransitSwitchIP {
-	t := &transitSwitchIPImpl{}
+func NewTransitSwitchIP(ipFamily k8snet.IPFamily) TransitSwitchIP {
+	t := &transitSwitchIPImpl{ipFamily: ipFamily}
 	t.value.Store("")
 
 	return t
@@ -77,10 +82,47 @@ func (t *transitSwitchIPImpl) UpdateFrom(node *corev1.Node) (bool, error) {
 		return false, nil
 	}
 
-	transitSwitchIP, err := jsonToIP(value)
+	getValidIP := func(input string) (string, error) {
+		if ip := net.ParseIP(input); ip != nil {
+			return ip.String(), nil
+		}
+
+		if ip, _, err := net.ParseCIDR(input); err == nil {
+			return ip.String(), nil
+		}
+
+		return "", fmt.Errorf("invalid transit switch IP: %q", input)
+	}
+
+	var fam map[string]string
+	if err := json.Unmarshal([]byte(value), &fam); err == nil {
+		var raw string
+		if t.ipFamily == k8snet.IPv6 {
+			raw = fam["ipv6"]
+		} else {
+			raw = fam["ipv4"]
+		}
+
+		if raw != "" {
+			ip, err := getValidIP(raw)
+			if err != nil {
+				return false, err
+			}
+
+			return ip != t.value.Swap(ip), nil
+		}
+	}
+
+	// Fallback to legacy plain IP string
+	rawIP, err := jsonToIP(value)
 	if err != nil {
 		return false, errors.Wrapf(err, "error parsing the transit switch IP")
 	}
 
-	return transitSwitchIP != t.value.Swap(transitSwitchIP), nil
+	ip, err := getValidIP(rawIP)
+	if err != nil {
+		return false, err
+	}
+
+	return ip != t.value.Swap(ip), nil
 }

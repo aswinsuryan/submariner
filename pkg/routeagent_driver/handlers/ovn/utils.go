@@ -74,3 +74,12 @@ func jsonToIP(jsonData string) (string, error) {
 
 	return ip.String(), nil
 }
+
+// familySuffix returns "-v4" or "-v6" for CR name uniqueness.
+func familySuffix(f k8snet.IPFamily) string {
+	if f == k8snet.IPv6 {
+		return "-v6"
+	}
+
+	return "-v4"
+}

@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	fakek8s "k8s.io/client-go/kubernetes/fake"
+	k8snet "k8s.io/utils/net"
 )
 
 var _ = Describe("TransitSwitchIP", func() {
@@ -39,7 +40,7 @@ var _ = Describe("TransitSwitchIP", func() {
 	)
 
 	BeforeEach(func() {
-		transitSwitchIP = ovn.NewTransitSwitchIP()
+		transitSwitchIP = ovn.NewTransitSwitchIP(k8snet.IPv4)
 		nodeIP = ""
 	})
 

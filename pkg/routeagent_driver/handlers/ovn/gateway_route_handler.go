@@ -71,6 +71,9 @@ func (h *GatewayRouteHandler) GetNetworkPlugins() []string {
 func (h *GatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.Endpoint) error {
 	if h.State().IsOnGateway() {
 		gwr := h.newGatewayRoute(endpoint)
+		if gwr == nil {
+			return nil
+		}
 
 		result, err := util.CreateOrUpdate(context.TODO(), GatewayResourceInterface(h.smClient, endpoint.Namespace),
 			gwr, util.Replace(gwr))
@@ -86,12 +89,14 @@ func (h *GatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.Endpo
 
 func (h *GatewayRouteHandler) RemoteEndpointRemoved(endpoint *submarinerv1.Endpoint) error {
 	if h.State().IsOnGateway() {
+		routeName := endpoint.Spec.ClusterID + familySuffix(h.ipFamily)
+
 		if err := h.smClient.SubmarinerV1().GatewayRoutes(endpoint.Namespace).Delete(context.TODO(),
-			endpoint.Spec.ClusterID, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return errors.Wrapf(err, "error deleting gatewayRoute %q", endpoint.Name)
+			routeName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return errors.Wrapf(err, "error deleting gatewayRoute %q", routeName)
 		}
 
-		logger.Infof("GatewayRoute %s deleted for remote endpoint %s", endpoint.Spec.ClusterID, endpoint.Name)
+		logger.Infof("GatewayRoute %s deleted for remote endpoint %s", routeName, endpoint.Name)
 	}
 
 	return nil
@@ -109,9 +114,12 @@ func (h *GatewayRouteHandler) TransitionToGateway() error {
 		}
 
 		gwr := h.newGatewayRoute(&endpoints[i])
+		if gwr == nil {
+			continue
+		}
 
-		result, err := util.CreateOrUpdate(context.TODO(), GatewayResourceInterface(h.smClient, endpoints[i].Namespace),
-			gwr, util.Replace(gwr))
+		result, err := util.CreateOrUpdate(context.TODO(),
+			GatewayResourceInterface(h.smClient, endpoints[i].Namespace), gwr, util.Replace(gwr))
 		if err != nil {
 			return errors.Wrapf(err, "error creating/updating GatewayRoute")
 		}
@@ -123,12 +131,29 @@ func (h *GatewayRouteHandler) TransitionToGateway() error {
 }
 
 func (h *GatewayRouteHandler) newGatewayRoute(endpoint *submarinerv1.Endpoint) *submarinerv1.GatewayRoute {
+	var famCIDRs []string
+
+	for _, cidr := range endpoint.Spec.Subnets {
+		isV6 := k8snet.IsIPv6CIDRString(cidr)
+		if isV6 && h.ipFamily == k8snet.IPv6 {
+			famCIDRs = append(famCIDRs, cidr)
+		}
+
+		if !isV6 && h.ipFamily == k8snet.IPv4 {
+			famCIDRs = append(famCIDRs, cidr)
+		}
+	}
+
+	if len(famCIDRs) == 0 {
+		return nil
+	}
+
 	return &submarinerv1.GatewayRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: endpoint.Spec.ClusterID,
+			Name: endpoint.Spec.ClusterID + familySuffix(h.ipFamily),
 		},
 		RoutePolicySpec: submarinerv1.RoutePolicySpec{
-			RemoteCIDRs: endpoint.Spec.Subnets,
+			RemoteCIDRs: famCIDRs,
 			NextHops:    []string{h.nextHopIP},
 		},
 	}

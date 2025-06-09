@@ -27,7 +27,6 @@ import (
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/constants"
 	"github.com/vishvananda/netlink"
-	k8snet "k8s.io/utils/net"
 	"k8s.io/utils/set"
 )
 
@@ -39,7 +38,7 @@ func (ovn *Handler) updateHostNetworkDataplane() error {
 	ovn.mutex.Lock()
 	defer ovn.mutex.Unlock()
 
-	currentRuleRemotes, err := ovn.getExistingIPv4HostNetworkRoutes()
+	currentRuleRemotes, err := ovn.getExistingHostNetworkRoutes()
 	if err != nil {
 		return errors.Wrapf(err, "error reading ip rule list for IPv4")
 	}
@@ -78,10 +77,10 @@ func (ovn *Handler) updateHostNetworkDataplane() error {
 	return nil
 }
 
-func (ovn *Handler) getExistingIPv4HostNetworkRoutes() (set.Set[string], error) {
+func (ovn *Handler) getExistingHostNetworkRoutes() (set.Set[string], error) {
 	currentRuleRemotes := set.New[string]()
 
-	rules, err := ovn.netLink.RuleList(k8snet.IPv4)
+	rules, err := ovn.netLink.RuleList(ovn.ipFamily)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error listing rules")
 	}

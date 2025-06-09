@@ -135,7 +135,8 @@ func (ovn *Handler) Init(ctx context.Context) error {
 		return err
 	}
 
-	nonGatewayRouteController, err := NewNonGatewayRouteController(*ovn.WatcherConfig, connectionHandler, ovn.Namespace, ovn.TransitSwitchIP)
+	nonGatewayRouteController, err := NewNonGatewayRouteController(ovn.ipFamily, *ovn.WatcherConfig, connectionHandler,
+		ovn.Namespace, ovn.TransitSwitchIP)
 	if err != nil {
 		return err
 	}
