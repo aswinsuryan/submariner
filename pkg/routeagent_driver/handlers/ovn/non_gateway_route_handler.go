@@ -25,12 +25,14 @@ import (
 	"github.com/submariner-io/admiral/pkg/resource"
 	"github.com/submariner-io/admiral/pkg/util"
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
+	"github.com/submariner-io/submariner/pkg/cidr"
 	submarinerClientset "github.com/submariner-io/submariner/pkg/client/clientset/versioned"
 	"github.com/submariner-io/submariner/pkg/cni"
 	"github.com/submariner-io/submariner/pkg/event"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8snet "k8s.io/utils/net"
 )
 
 type NonGatewayRouteHandler struct {
@@ -38,13 +40,15 @@ type NonGatewayRouteHandler struct {
 	event.NodeHandlerBase
 	smClient        submarinerClientset.Interface
 	transitSwitchIP TransitSwitchIP
+	ipFamily        k8snet.IPFamily
 }
 
-func NewNonGatewayRouteHandler(smClient submarinerClientset.Interface, transitSwitchIP TransitSwitchIP,
+func NewNonGatewayRouteHandler(ipFamily k8snet.IPFamily, smClient submarinerClientset.Interface, transitSwitchIP TransitSwitchIP,
 ) *NonGatewayRouteHandler {
 	return &NonGatewayRouteHandler{
 		smClient:        smClient,
 		transitSwitchIP: transitSwitchIP,
+		ipFamily:        ipFamily,
 	}
 }
 
@@ -67,6 +71,9 @@ func (h *NonGatewayRouteHandler) RemoteEndpointCreated(endpoint *submarinerv1.En
 	}
 
 	ngwr := h.newNonGatewayRoute(endpoint)
+	if ngwr == nil {
+		return nil
+	}
 
 	result, err := util.CreateOrUpdate(context.TODO(), NonGatewayResourceInterface(h.smClient, endpoint.Namespace),
 		ngwr, util.Replace(ngwr))
@@ -84,12 +91,14 @@ func (h *NonGatewayRouteHandler) RemoteEndpointRemoved(endpoint *submarinerv1.En
 		return nil
 	}
 
+	routeName := endpoint.Spec.ClusterID + familySuffix(h.ipFamily)
+
 	if err := h.smClient.SubmarinerV1().NonGatewayRoutes(endpoint.Namespace).Delete(context.TODO(),
-		endpoint.Spec.ClusterID, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return errors.Wrapf(err, "error deleting nonGatewayRoute %q", endpoint.Name)
+		routeName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return errors.Wrapf(err, "error deleting nonGatewayRoute %q", routeName)
 	}
 
-	logger.Infof("NonGatewayRoute %s deleted for remote endpoint %s", endpoint.Spec.ClusterID, endpoint.Name)
+	logger.Infof("NonGatewayRoute %s deleted for remote endpoint %s", routeName, endpoint.Name)
 
 	return nil
 }
@@ -101,18 +110,18 @@ func (h *NonGatewayRouteHandler) TransitionToGateway() error {
 
 	endpoints := h.State().GetRemoteEndpoints()
 	for i := range endpoints {
-		// This piece of code is designed to manage upgrades from a version lower than 0.16.3 to a higher version,
-		// where we utilize the endpoint name as the identifier for ngwr. It can be removed once we stop supporting
-		// the 0.16 version.
 		if err := h.smClient.SubmarinerV1().NonGatewayRoutes(endpoints[i].Namespace).Delete(context.TODO(),
 			endpoints[i].Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return errors.Wrapf(err, "error deleting nonGatewayRoute %q", endpoints[i].Name)
 		}
 
 		ngwr := h.newNonGatewayRoute(&endpoints[i])
+		if ngwr == nil {
+			continue
+		}
 
-		result, err := util.CreateOrUpdate(context.TODO(), NonGatewayResourceInterface(h.smClient, endpoints[i].Namespace),
-			ngwr, util.Replace(ngwr))
+		result, err := util.CreateOrUpdate(context.TODO(),
+			NonGatewayResourceInterface(h.smClient, endpoints[i].Namespace), ngwr, util.Replace(ngwr))
 		if err != nil {
 			return errors.Wrapf(err, "error creating/updating NonGatewayRoute")
 		}
@@ -142,13 +151,18 @@ func (h *NonGatewayRouteHandler) NodeUpdated(node *corev1.Node) error {
 
 	endpoints := h.State().GetRemoteEndpoints()
 	for i := range endpoints {
+		ngwr := h.newNonGatewayRoute(&endpoints[i])
+		if ngwr == nil {
+			continue
+		}
+
 		err = util.Update(context.TODO(), NonGatewayResourceInterface(h.smClient, endpoints[i].Namespace),
-			h.newNonGatewayRoute(&endpoints[i]), func(existing *submarinerv1.NonGatewayRoute) (*submarinerv1.NonGatewayRoute, error) {
+			ngwr, func(existing *submarinerv1.NonGatewayRoute) (*submarinerv1.NonGatewayRoute, error) {
 				existing.RoutePolicySpec.NextHops = []string{h.transitSwitchIP.Get()}
 				return existing, nil
 			})
 		if err != nil {
-			return errors.Wrapf(err, "error updating NonGatewayRoute")
+			return errors.Wrapf(err, "error updating NonGatewayRoute %q", ngwr.Name)
 		}
 	}
 
@@ -156,13 +170,19 @@ func (h *NonGatewayRouteHandler) NodeUpdated(node *corev1.Node) error {
 }
 
 func (h *NonGatewayRouteHandler) newNonGatewayRoute(endpoint *submarinerv1.Endpoint) *submarinerv1.NonGatewayRoute {
+	famCIDRs := cidr.ExtractSubnets(h.ipFamily, endpoint.Spec.Subnets)
+
+	if len(famCIDRs) == 0 {
+		return nil
+	}
+
 	return &submarinerv1.NonGatewayRoute{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      endpoint.Spec.ClusterID,
+			Name:      endpoint.Spec.ClusterID + familySuffix(h.ipFamily),
 			Namespace: endpoint.Namespace,
 		},
 		RoutePolicySpec: submarinerv1.RoutePolicySpec{
-			RemoteCIDRs: endpoint.Spec.Subnets,
+			RemoteCIDRs: famCIDRs,
 			NextHops:    []string{h.transitSwitchIP.Get()},
 		},
 	}

@@ -126,7 +126,6 @@ func main() {
 		np = cni.Generic
 	}
 
-	transitSwitchIP := ovn.NewTransitSwitchIP()
 	submSpec := types.SubmarinerSpecification{}
 	logger.FatalOnError(envconfig.Process("submariner", &submSpec), "Error processing env vars")
 
@@ -138,6 +137,8 @@ func main() {
 	var handlers []event.Handler //nolint:prealloc // Ignore
 
 	for _, family := range cidr.ExtractIPFamilies(env.ClusterCidr) {
+		transitSwitchIP := ovn.NewTransitSwitchIP(family)
+
 		handlers = append(handlers, kubeproxy.NewSyncHandler(family, env.ClusterCidr, env.ServiceCidr),
 			mtu.NewHandler(family, env.ClusterCidr, len(env.GlobalCidr) != 0, getTCPMssValue(localNode)),
 			ovn.NewHandler(family, &ovn.HandlerConfig{
@@ -150,11 +151,11 @@ func main() {
 				WatcherConfig:   config,
 				TransitSwitchIP: transitSwitchIP,
 			}),
-			ovn.NewGatewayRouteHandler(family, smClientset))
+			ovn.NewGatewayRouteHandler(family, smClientset),
+			ovn.NewNonGatewayRouteHandler(family, smClientset, transitSwitchIP))
 	}
 
 	handlers = append(handlers,
-		ovn.NewNonGatewayRouteHandler(smClientset, transitSwitchIP),
 		cabledriver.NewXRFMCleanupHandler(),
 		cabledriver.NewVXLANCleanup(),
 		calico.NewCalicoIPPoolHandler(cfg, env.Namespace, k8sClientSet),
