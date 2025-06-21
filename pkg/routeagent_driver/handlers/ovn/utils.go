@@ -50,7 +50,7 @@ func getNextHopOnK8sMgmtIntf(family k8snet.IPFamily) (string, error) {
 	return "", errors.Errorf("no %v address found on interface %q", family, OVNK8sMgmntIntfName)
 }
 
-func jsonToIP(jsonData string) (string, error) {
+func jsonToIP(jsonData string, family k8snet.IPFamily) (string, error) {
 	var data map[string]string
 
 	err := json.Unmarshal([]byte(jsonData), &data)
@@ -58,13 +58,9 @@ func jsonToIP(jsonData string) (string, error) {
 		return "", errors.Wrapf(err, "error unmarshalling the JSON IP")
 	}
 
-	var ipStr string
-	if val, found := data["ipv4"]; found {
-		ipStr = val
-	} else if val, found := data["ipv6"]; found {
-		ipStr = val
-	} else {
-		return "", errors.New("JSON data does not contain 'ipv4' or 'ipv6' field")
+	ipStr := data["ipv"+string(family)]
+	if ipStr == "" {
+		return "", errors.Errorf("JSON data does not contain 'ipv%s' field", family)
 	}
 
 	ip, _, err := net.ParseCIDR(ipStr)
@@ -73,4 +69,13 @@ func jsonToIP(jsonData string) (string, error) {
 	}
 
 	return ip.String(), nil
+}
+
+// familySuffix "-v6" for CR name uniqueness.
+func familySuffix(f k8snet.IPFamily) string {
+	if f == k8snet.IPv6 {
+		return "-v6"
+	}
+
+	return ""
 }

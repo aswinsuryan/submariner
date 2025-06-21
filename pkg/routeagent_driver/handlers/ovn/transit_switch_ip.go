@@ -28,6 +28,7 @@ import (
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/constants"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
+	k8snet "k8s.io/utils/net"
 )
 
 type TransitSwitchIPGetter interface {
@@ -41,11 +42,12 @@ type TransitSwitchIP interface {
 }
 
 type transitSwitchIPImpl struct {
-	value atomic.Value
+	value    atomic.Value
+	ipFamily k8snet.IPFamily
 }
 
-func NewTransitSwitchIP() TransitSwitchIP {
-	t := &transitSwitchIPImpl{}
+func NewTransitSwitchIP(ipFamily k8snet.IPFamily) TransitSwitchIP {
+	t := &transitSwitchIPImpl{ipFamily: ipFamily}
 	t.value.Store("")
 
 	return t
@@ -77,10 +79,10 @@ func (t *transitSwitchIPImpl) UpdateFrom(node *corev1.Node) (bool, error) {
 		return false, nil
 	}
 
-	transitSwitchIP, err := jsonToIP(value)
+	ip, err := jsonToIP(value, t.ipFamily)
 	if err != nil {
 		return false, errors.Wrapf(err, "error parsing the transit switch IP")
 	}
 
-	return transitSwitchIP != t.value.Swap(transitSwitchIP), nil
+	return ip != t.value.Swap(ip), nil
 }

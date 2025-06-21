@@ -24,6 +24,7 @@ import (
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	k8snet "k8s.io/utils/net"
 )
 
 type NonGatewayRouteController struct {
@@ -32,10 +33,11 @@ type NonGatewayRouteController struct {
 	remoteSubnets          sets.Set[string]
 	stopCh                 chan struct{}
 	transitSwitchIP        TransitSwitchIPGetter
+	ipFamily               k8snet.IPFamily
 }
 
 //nolint:gocritic // Ignore hugeParam
-func NewNonGatewayRouteController(config watcher.Config, connectionHandler *ConnectionHandler,
+func NewNonGatewayRouteController(ipFamily k8snet.IPFamily, config watcher.Config, connectionHandler *ConnectionHandler,
 	namespace string, transitSwitchIP TransitSwitchIPGetter,
 ) (*NonGatewayRouteController, error) {
 	// We'll panic if config is nil, this is intentional
@@ -46,6 +48,7 @@ func NewNonGatewayRouteController(config watcher.Config, connectionHandler *Conn
 		remoteSubnets:     sets.New[string](),
 		stopCh:            make(chan struct{}),
 		transitSwitchIP:   transitSwitchIP,
+		ipFamily:          ipFamily,
 	}
 
 	config.ResourceConfigs = []watcher.ResourceConfig{
@@ -102,26 +105,30 @@ func (g *NonGatewayRouteController) nonGatewayRouteDeleted(obj runtime.Object, _
 
 func (g *NonGatewayRouteController) reconcileRemoteSubnets(submNonGWRoute *submarinerv1.NonGatewayRoute, addSubnet bool) error {
 	if len(submNonGWRoute.RoutePolicySpec.NextHops) == 0 {
-		// This happens only when the RoutePolicySpec is not created correctly and added to prevent an invalid memory
-		// access.
 		logger.Warningf("The NonGatewayRoute does not have next hop %v", submNonGWRoute)
 		return nil
 	}
 
-	// If this node belongs to same zone as gateway node, ignore the event.
-	if submNonGWRoute.RoutePolicySpec.NextHops[0] != g.transitSwitchIP.Get() {
-		for _, subnet := range submNonGWRoute.RoutePolicySpec.RemoteCIDRs {
-			if addSubnet {
-				g.remoteSubnets.Insert(subnet)
-			} else {
-				g.remoteSubnets.Delete(subnet)
-			}
-		}
+	nextHop := submNonGWRoute.RoutePolicySpec.NextHops[0]
 
-		return g.connectionHandler.reconcileSubOvnLogicalRouterPolicies(g.remoteSubnets, submNonGWRoute.RoutePolicySpec.NextHops[0])
+	if k8snet.IPFamilyOfString(nextHop) != g.ipFamily {
+		return nil
 	}
 
-	return nil
+	if nextHop == g.transitSwitchIP.Get() {
+		logger.Infof("Skipping NonGatewayRoute for local transit switch IP: %s", nextHop)
+		return nil
+	}
+
+	for _, subnet := range submNonGWRoute.RoutePolicySpec.RemoteCIDRs {
+		if addSubnet {
+			g.remoteSubnets.Insert(subnet)
+		} else {
+			g.remoteSubnets.Delete(subnet)
+		}
+	}
+
+	return g.connectionHandler.reconcileSubOvnLogicalRouterPolicies(g.remoteSubnets, nextHop)
 }
 
 func (g *NonGatewayRouteController) stop() {

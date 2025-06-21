@@ -116,14 +116,14 @@ var _ = Describe("", func() {
 			NewOVSDBClient: func(_ model.ClientDBModel, _ ...libovsdbclient.Option) (libovsdbclient.Client, error) {
 				return fakeovn.NewOVSDBClient(), nil
 			},
-			TransitSwitchIP: ovn.NewTransitSwitchIP(),
+			TransitSwitchIP: ovn.NewTransitSwitchIP(k8snet.IPv4),
 		})
 		Expect(ovnHandler.Init(ctx)).To(Succeed())
 
 		gwRouteHandler := ovn.NewGatewayRouteHandler(k8snet.IPv4, submClient)
 		Expect(gwRouteHandler.Init(ctx)).To(Succeed())
 
-		ngwRouteHandler := ovn.NewNonGatewayRouteHandler(submClient, ovn.NewTransitSwitchIP())
+		ngwRouteHandler := ovn.NewNonGatewayRouteHandler(k8snet.IPv4, submClient, ovn.NewTransitSwitchIP(k8snet.IPv4))
 		Expect(ngwRouteHandler.Init(ctx)).To(Succeed())
 
 		mtuHandler := mtu.NewHandler(k8snet.IPv4, localClusterCIDRs, false, 0)

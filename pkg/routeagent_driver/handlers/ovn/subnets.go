@@ -18,16 +18,17 @@ limitations under the License.
 
 package ovn
 
-import "k8s.io/utils/set"
+import (
+	"github.com/submariner-io/submariner/pkg/cidr"
+	"k8s.io/utils/set"
+)
 
 func (ovn *Handler) getRemoteSubnets() set.Set[string] {
 	endpointSubnets := set.New[string]()
 
 	endpoints := ovn.State().GetRemoteEndpoints()
 	for i := range endpoints {
-		for _, subnet := range endpoints[i].Spec.Subnets {
-			endpointSubnets.Insert(subnet)
-		}
+		endpointSubnets.Insert(cidr.ExtractSubnets(ovn.ipFamily, endpoints[i].Spec.Subnets)...)
 	}
 
 	return endpointSubnets

@@ -33,14 +33,15 @@ import (
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/handlers/ovn"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8snet "k8s.io/utils/net"
 )
 
 var _ = Describe("NonGatewayRouteHandler", func() {
 	t := newTestDriver()
 
 	JustBeforeEach(func() {
-		tsIP := ovn.NewTransitSwitchIP()
-		t.Start(ovn.NewNonGatewayRouteHandler(t.submClient, tsIP))
+		tsIP := ovn.NewTransitSwitchIP(k8snet.IPv4)
+		t.Start(ovn.NewNonGatewayRouteHandler(k8snet.IPv4, t.submClient, tsIP))
 		Expect(tsIP.Init(context.TODO(), t.k8sClient)).To(Succeed())
 	})
 
@@ -57,16 +58,12 @@ var _ = Describe("NonGatewayRouteHandler", func() {
 
 		It("should create/delete a NonGatewayRoute", func() {
 			endpointV4 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v4", "host", "193.0.4.0/24"))
-			endpointV6 := t.CreateEndpoint(testing.NewEndpoint("remote-cluster-v6", "host", "193.0.4.0/24", "fd00:abcd::/64"))
 
 			awaitNonGatewayRoute(endpointV4)
-			awaitNonGatewayRoute(endpointV6)
 
 			t.DeleteEndpoint(endpointV4.Name)
-			t.DeleteEndpoint(endpointV6.Name)
 
 			test.AwaitNoResource(ovn.NonGatewayResourceInterface(t.submClient, testing.Namespace), endpointV4.Spec.ClusterID)
-			test.AwaitNoResource(ovn.NonGatewayResourceInterface(t.submClient, testing.Namespace), endpointV6.Spec.ClusterID)
 		})
 
 		Context("and the NonGatewayRoute operations initially fail", func() {

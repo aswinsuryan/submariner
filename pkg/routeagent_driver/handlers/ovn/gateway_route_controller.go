@@ -33,6 +33,7 @@ type GatewayRouteController struct {
 	remoteSubnets       sets.Set[string]
 	stopCh              chan struct{}
 	mgmtIP              string
+	ipFamily            k8snet.IPFamily
 }
 
 //nolint:gocritic // Ignore hugeParam
@@ -45,6 +46,7 @@ func NewGatewayRouteController(ipFamily k8snet.IPFamily, config watcher.Config, 
 		connectionHandler: connectionHandler,
 		remoteSubnets:     sets.New[string](),
 		stopCh:            make(chan struct{}),
+		ipFamily:          ipFamily,
 	}
 
 	config.ResourceConfigs = []watcher.ResourceConfig{
@@ -120,10 +122,12 @@ func (g *GatewayRouteController) reconcileRemoteSubnets(subMGWRoute *submarinerv
 	}
 
 	for _, subnet := range subMGWRoute.RoutePolicySpec.RemoteCIDRs {
-		if addSubnet {
-			g.remoteSubnets.Insert(subnet)
-		} else {
-			g.remoteSubnets.Delete(subnet)
+		if k8snet.IPFamilyOfCIDRString(subnet) == g.ipFamily {
+			if addSubnet {
+				g.remoteSubnets.Insert(subnet)
+			} else {
+				g.remoteSubnets.Delete(subnet)
+			}
 		}
 	}
 

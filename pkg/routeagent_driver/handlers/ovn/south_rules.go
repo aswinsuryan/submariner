@@ -23,9 +23,9 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/submariner-io/admiral/pkg/log"
+	"github.com/submariner-io/submariner/pkg/cidr"
 	"github.com/submariner-io/submariner/pkg/routeagent_driver/constants"
 	"github.com/vishvananda/netlink"
-	k8snet "k8s.io/utils/net"
 	"k8s.io/utils/set"
 )
 
@@ -35,10 +35,10 @@ import (
 func (ovn *Handler) handleSubnets(remoteSubnets []string, ruleFunc func(rule *netlink.Rule) error,
 	ignoredErrorFunc func(error) bool,
 ) error {
-	localCIDRs := set.New(ovn.ClusterCIDR...)
-	localCIDRs.Insert(ovn.ServiceCIDR...)
+	localCIDRs := set.New(cidr.ExtractSubnets(ovn.ipFamily, ovn.ClusterCIDR)...)
+	localCIDRs.Insert(cidr.ExtractSubnets(ovn.ipFamily, ovn.ServiceCIDR)...)
 
-	for _, subnetToHandle := range remoteSubnets {
+	for _, subnetToHandle := range cidr.ExtractSubnets(ovn.ipFamily, remoteSubnets) {
 		for _, localSubnet := range localCIDRs.UnsortedList() {
 			rule, err := ovn.getRuleSpec(localSubnet, subnetToHandle, constants.RouteAgentInterClusterNetworkTableID)
 			if err != nil {
@@ -84,10 +84,10 @@ func (ovn *Handler) getRuleSpec(dest, src string, tableID int) (*netlink.Rule, e
 	return rule, nil
 }
 
-func (ovn *Handler) getExistingIPv4RuleSubnets() (set.Set[string], error) {
+func (ovn *Handler) getExistingRuleSubnets() (set.Set[string], error) {
 	currentRuleRemotes := set.New[string]()
 
-	rules, err := ovn.netLink.RuleList(k8snet.IPv4)
+	rules, err := ovn.netLink.RuleList(ovn.ipFamily)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error listing rules")
 	}

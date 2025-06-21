@@ -32,8 +32,9 @@ import (
 )
 
 const (
-	OVNClusterRouter     = "ovn_cluster_router"
-	ovnRoutePoliciesPrio = 20000
+	OVNClusterRouter       = "ovn_cluster_router"
+	ovnRoutePoliciesPrioV4 = 20000
+	ovnRoutePoliciesPrioV6 = 20100
 )
 
 func (c *ConnectionHandler) reconcileOvnLogicalRouterStaticRoutes(remoteSubnets sets.Set[string],
@@ -83,10 +84,15 @@ func buildLRSRsFromSubnets(subnetsToAdd []string, nextHop string) []*nbdb.Logica
 }
 
 func (c *ConnectionHandler) reconcileSubOvnLogicalRouterPolicies(remoteSubnets sets.Set[string], nextHop string) error {
-	expectedLRPs := buildLRPsFromSubnets(c.ipFamily, remoteSubnets.UnsortedList(), nextHop)
+	priority := ovnRoutePoliciesPrioV4
+	if c.ipFamily == k8snet.IPv6 {
+		priority = ovnRoutePoliciesPrioV6
+	}
+
+	expectedLRPs := buildLRPsFromSubnets(c.ipFamily, remoteSubnets.UnsortedList(), nextHop, priority)
 
 	lrpStalePredicate := func(item *nbdb.LogicalRouterPolicy) bool {
-		if item.Priority != ovnRoutePoliciesPrio {
+		if item.Priority != priority {
 			return false
 		}
 
@@ -123,7 +129,7 @@ func (c *ConnectionHandler) reconcileSubOvnLogicalRouterPolicies(remoteSubnets s
 // getNorthSubnetsToAddAndRemove receives the existing state for the north (other clusters) routes in the OVN
 // database, and based on the known remote endpoints it will return the elements that need
 // to be added and removed.
-func buildLRPsFromSubnets(family k8snet.IPFamily, subnetsToAdd []string, nextHop string) []*nbdb.LogicalRouterPolicy {
+func buildLRPsFromSubnets(family k8snet.IPFamily, subnetsToAdd []string, nextHop string, priority int) []*nbdb.LogicalRouterPolicy {
 	toAdd := make([]*nbdb.LogicalRouterPolicy, 0, len(subnetsToAdd))
 
 	var ipMatchField string
@@ -138,7 +144,7 @@ func buildLRPsFromSubnets(family k8snet.IPFamily, subnetsToAdd []string, nextHop
 		match := ipMatchField + " == " + subnet
 
 		toAdd = append(toAdd, &nbdb.LogicalRouterPolicy{
-			Priority: ovnRoutePoliciesPrio,
+			Priority: priority,
 			Action:   "reroute",
 			Match:    match,
 			Nexthop:  ptr.To(nextHop),

@@ -36,10 +36,11 @@ import (
 	"github.com/vishvananda/netlink"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8snet "k8s.io/utils/net"
 )
 
 func (ovn *Handler) cleanupGatewayDataplane() error {
-	currentRemoteSubnets, err := ovn.getExistingIPv4RuleSubnets()
+	currentRemoteSubnets, err := ovn.getExistingRuleSubnets()
 	if err != nil {
 		return errors.Wrapf(err, "error reading ip rule list for IPv4")
 	}
@@ -66,7 +67,7 @@ func (ovn *Handler) updateGatewayDataplane() error {
 	ovn.mutex.Lock()
 	defer ovn.mutex.Unlock()
 
-	currentRuleRemotes, err := ovn.getExistingIPv4RuleSubnets()
+	currentRuleRemotes, err := ovn.getExistingRuleSubnets()
 	if err != nil {
 		return errors.Wrapf(err, "error reading ip rule list for IPv4")
 	}
@@ -118,6 +119,7 @@ func (ovn *Handler) getForwardingRuleSpecs() ([]*packetfilter.Rule, error) {
 	// hits ovn-k8s-mp0, firewall rules would be processed. Therefore, we include these firewall rules in the FORWARDing
 	// chain to allow such traffic. Similar thing happens for outbound traffic as well, and we use routes in table 150.
 	rules := []*packetfilter.Rule{}
+
 	for _, remoteCIDR := range ovn.getRemoteSubnets().UnsortedList() {
 		rules = append(rules, &packetfilter.Rule{
 			DestCIDR:     remoteCIDR,
@@ -151,8 +153,7 @@ func (ovn *Handler) getMSSClampingRuleSpecs() ([]*packetfilter.Rule, error) {
 			Action:    packetfilter.RuleActionMss,
 			ClampType: packetfilter.ToValue,
 			MssValue:  strconv.Itoa(MSSFor1500MTU),
-		},
-		)
+		})
 	}
 
 	return rules, nil
@@ -281,6 +282,10 @@ func (ovn *Handler) processEndpointSubnets(add bool, endpoints ...submarinerv1.E
 
 	for i := range endpoints {
 		for _, subnet := range endpoints[i].Spec.Subnets {
+			if k8snet.IPFamilyOfCIDRString(subnet) != ovn.ipFamily {
+				continue
+			}
+
 			if err := ovn.updateNoMasqueradeRules(subnet, add); err != nil {
 				return err
 			}
