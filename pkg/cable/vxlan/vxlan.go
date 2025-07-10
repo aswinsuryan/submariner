@@ -20,6 +20,8 @@ package vxlan
 
 import (
 	"fmt"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
+	"k8s.io/client-go/dynamic"
 	"net"
 	"os"
 	"strings"
@@ -63,7 +65,7 @@ func init() {
 	cable.AddDriver(CableDriverName, NewDriver)
 }
 
-func NewDriver(localEndpoint *submendpoint.Local, localCluster *types.SubmarinerCluster) (cable.Driver, error) {
+func NewDriver(syncerConfig broker.SyncerConfig, brokerClient dynamic.Interface, localEndpoint *submendpoint.Local, localCluster *types.SubmarinerCluster) (cable.Driver, error) {
 	// We'll panic if localEndpoint or localCluster are nil, this is intentional
 	var err error
 

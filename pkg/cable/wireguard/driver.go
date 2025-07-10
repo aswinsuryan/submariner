@@ -22,6 +22,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
+	"k8s.io/client-go/dynamic"
 	"net"
 	"slices"
 	"time"
@@ -86,7 +88,7 @@ type wireguard struct {
 }
 
 // NewDriver creates a new WireGuard driver.
-func NewDriver(localEndpoint *endpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+func NewDriver(syncerConfig broker.SyncerConfig, brokerClient dynamic.Interface, localEndpoint *endpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
 	// We'll panic if localEndpoint is nil, this is intentional
 	var err error
 

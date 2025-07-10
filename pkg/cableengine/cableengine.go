@@ -20,6 +20,8 @@ package cableengine
 
 //nolint:gci // The supported driver imports are kept separate.
 import (
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
+	"k8s.io/client-go/dynamic"
 	"reflect"
 	"sync"
 
@@ -78,18 +80,21 @@ type engine struct {
 	natEndpointInfoCh   chan *natdiscovery.NATEndpointInfo
 	natDiscoveryPending map[string]int
 	installedCables     map[string]metav1.Time
+	syncerConfig        broker.SyncerConfig
+	brokerClient        dynamic.Interface
 }
 
 var logger = log.Logger{Logger: logf.Log.WithName("CableEngine")}
 
 // NewEngine creates a new Engine for the local cluster.
-func NewEngine(localCluster *types.SubmarinerCluster, localEndpoint *submendpoint.Local) Engine {
+func NewEngine(syncerConfig broker.SyncerConfig, localCluster *types.SubmarinerCluster, localEndpoint *submendpoint.Local) Engine {
 	// We'll panic if localCluster or localEndpoint are nil, this is intentional
 	return &engine{
 		localCluster:        *localCluster,
 		localEndpoint:       localEndpoint,
 		natDiscoveryPending: map[string]int{},
 		installedCables:     map[string]metav1.Time{},
+		syncerConfig:        syncerConfig,
 	}
 }
 
@@ -130,7 +135,7 @@ func (i *engine) startDriver() error {
 
 	var err error
 
-	if i.driver, err = cable.NewDriver(i.localEndpoint, &i.localCluster); err != nil {
+	if i.driver, err = cable.NewDriver(i.syncerConfig, i.brokerClient, i.localEndpoint, &i.localCluster); err != nil {
 		return errors.Wrap(err, "error creating the cable driver")
 	}
 

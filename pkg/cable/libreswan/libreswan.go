@@ -23,7 +23,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
 	"io/fs"
+	"k8s.io/client-go/dynamic"
 	"os"
 	"os/exec"
 	"regexp"
@@ -81,6 +83,9 @@ func init() {
 }
 
 type libreswan struct {
+	syncerConfig broker.SyncerConfig
+	brokerClient dynamic.Interface
+
 	localEndpoint subv1.EndpointSpec
 	// This tracks the requested connections
 	connections []subv1.Connection
@@ -94,6 +99,8 @@ type libreswan struct {
 	debug                 bool
 	forceUDPEncapsulation bool
 	plutoStarted          bool
+
+	stopCh chan struct{}
 }
 
 type specification struct {
@@ -106,7 +113,7 @@ type specification struct {
 }
 
 // NewLibreswan starts an IKE daemon using Libreswan and configures it to manage Submariner's endpoints.
-func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+func NewLibreswan(syncerConfig broker.SyncerConfig, brokerClient dynamic.Interface, localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
 	// We'll panic if localEndpoint is nil, this is intentional
 	ipSecSpec := specification{}
 
@@ -162,7 +169,9 @@ func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster)
 		localEndpoint:         *localEndpoint.Spec(),
 		connections:           []subv1.Connection{},
 		forceUDPEncapsulation: ipSecSpec.ForceEncaps,
+		syncerConfig:          syncerConfig,
 		plutoStarted:          false,
+		brokerClient:          brokerClient,
 	}, nil
 }
 
@@ -183,6 +192,28 @@ func (i *libreswan) Init() error {
 
 	fmt.Fprintf(file, "%%any %%any : PSK \"%s\"\n", i.secretKey)
 
+	logger.Infof("Starting certificate createion Private Ips %s Public Ips %s, k8client", i.localEndpoint.PrivateIPs, i.localEndpoint.PublicIPs)
+	sanIPs := append(i.localEndpoint.PrivateIPs, i.localEndpoint.PublicIPs...)
+	err = i.EnsureCertificateSecret(i.localEndpoint.ClusterID, sanIPs)
+	if err != nil {
+		logger.Warningf("Unable to ensure certificate: %v", err)
+	}
+
+	csrSyncer, err := SetupCertificateSecretSyncer(i.syncerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to setup CSR syncer: %w", err)
+	}
+
+	// Store stopCh in struct so you can close it on cleanup
+	i.stopCh = make(chan struct{})
+
+	go func() {
+		if err := csrSyncer.Start(i.stopCh); err != nil {
+			logger.Error(err, "CSR syncer failed")
+		}
+	}()
+
+	logger.Info("Started certificate syncers")
 	return nil
 }
 

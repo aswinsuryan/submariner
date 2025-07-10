@@ -20,6 +20,8 @@ package cable
 
 import (
 	"fmt"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
+	"k8s.io/client-go/dynamic"
 	"strings"
 
 	"github.com/submariner-io/admiral/pkg/log"
@@ -57,7 +59,7 @@ type Driver interface {
 }
 
 // Function prototype to create a new driver.
-type DriverCreateFunc func(localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error)
+type DriverCreateFunc func(syncer broker.SyncerConfig, brokerClient dynamic.Interface, localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error)
 
 const (
 	InterfaceNameConfig = "interface-name"
@@ -82,7 +84,7 @@ func AddDriver(name string, driverCreate DriverCreateFunc) {
 }
 
 // Returns a new driver according the required Backend.
-func NewDriver(localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error) {
+func NewDriver(syncerConfig broker.SyncerConfig, brokerClient dynamic.Interface, localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error) {
 	// We'll panic if localEndpoint or localCluster are nil, this is intentional
 	spec := localEndpoint.Spec()
 
@@ -101,7 +103,7 @@ func NewDriver(localEndpoint *endpoint.Local, localCluster *types.SubmarinerClus
 		return nil, fmt.Errorf("unsupported cable type %s; supported types: %s", spec.Backend, driverList.String())
 	}
 
-	return driverCreate(localEndpoint, localCluster)
+	return driverCreate(syncerConfig, brokerClient, localEndpoint, localCluster)
 }
 
 // Sets the default cable driver name, if it is not specified by user.
