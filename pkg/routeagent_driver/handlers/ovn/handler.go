@@ -186,6 +186,9 @@ func (ovn *Handler) RemoteEndpointCreated(endpoint *submV1.Endpoint) error {
 			if err = ovn.addNoMasqueradeIPTables(subnet); err != nil {
 				return errors.Wrapf(err, "error adding no-masquerade rules for subnet %q", subnet)
 			}
+			if err = ovn.addSelfSNATRule(subnet); err != nil {
+				return errors.Wrapf(err, "error adding self-SNAT rule for subnet %q", subnet)
+			}
 		}
 
 		return ovn.updateGatewayDataplane()
@@ -251,6 +254,9 @@ func (ovn *Handler) TransitionToGateway() error {
 		for _, subnet := range endpoints[i].Spec.Subnets {
 			if err := ovn.addNoMasqueradeIPTables(subnet); err != nil {
 				return errors.Wrapf(err, "error adding no-masquerade rules for subnet %q", subnet)
+			}
+			if err := ovn.addSelfSNATRule(subnet); err != nil {
+				return errors.Wrapf(err, "error adding self-SNAT rule for subnet %q", subnet)
 			}
 		}
 	}

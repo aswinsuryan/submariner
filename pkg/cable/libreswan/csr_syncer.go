@@ -8,6 +8,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"net"
+
+	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/syncer"
 	"github.com/submariner-io/admiral/pkg/syncer/broker"
 	corev1 "k8s.io/api/core/v1"
@@ -15,12 +18,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"net"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
 	RSABitSize        = 2048
-	CertSecretName    = "submariner-certificate"
 	LocalNamespace    = "submariner-operator"
 	CertLabelKey      = "submariner.io/csr-request"
 	PrivateKeyDataKey = "tls.key"
@@ -28,11 +30,19 @@ const (
 	SignedCertDataKey = "tls.crt"
 )
 
+var csrLogger = log.Logger{Logger: logf.Log.WithName("certificate-csr-syncer")}
+
+// getCertSecretName returns the certificate secret name for the given cluster
+func getCertSecretName(clusterID string) string {
+	return fmt.Sprintf("submariner-certificate-%s", clusterID)
+}
+
 func (i *libreswan) EnsureCertificateSecret(clusterID string, sanIPs []string) error {
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
 	secretClient := i.syncerConfig.LocalClient.Resource(gvr).Namespace(LocalNamespace)
 
-	_, err := secretClient.Get(context.TODO(), CertSecretName, metav1.GetOptions{})
+	certSecretName := getCertSecretName(clusterID)
+	_, err := secretClient.Get(context.TODO(), certSecretName, metav1.GetOptions{})
 	if err == nil {
 		return nil
 	}
@@ -49,7 +59,7 @@ func (i *libreswan) EnsureCertificateSecret(clusterID string, sanIPs []string) e
 	// Build corev1.Secret, then convert it
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      CertSecretName,
+			Name:      certSecretName,
 			Namespace: LocalNamespace,
 			Labels: map[string]string{
 				CertLabelKey: clusterID,
@@ -71,12 +81,13 @@ func (i *libreswan) EnsureCertificateSecret(clusterID string, sanIPs []string) e
 	return err
 }
 
-func (i *libreswan) DeleteCertificateSecret(ctx context.Context) error {
+func (i *libreswan) DeleteCertificateSecret(ctx context.Context, clusterID string) error {
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
 
+	certSecretName := getCertSecretName(clusterID)
 	err := i.syncerConfig.LocalClient.Resource(gvr).
 		Namespace(LocalNamespace).
-		Delete(ctx, CertSecretName, metav1.DeleteOptions{})
+		Delete(ctx, certSecretName, metav1.DeleteOptions{})
 
 	return err
 }
@@ -117,6 +128,21 @@ func generateKeyAndCSR(clusterID string, sanIPs []string) ([]byte, []byte, error
 
 func SetupCertificateSecretSyncer(syncerConfig broker.SyncerConfig) (*broker.Syncer, error) {
 
+	// Default broker namespace if not provided
+	if syncerConfig.BrokerNamespace == "" {
+		syncerConfig.BrokerNamespace = "submariner-k8s-broker"
+		csrLogger.Infof("CSR syncer: defaulting brokerNamespace=%s", syncerConfig.BrokerNamespace)
+	}
+
+	// Capture the original local cluster ID for label matching, then
+	// disable loop-protection so our own broker Secret is processed
+	localCID := syncerConfig.LocalClusterID
+	syncerConfig.LocalClusterID = ""
+
+	// Minimal visibility into syncer config
+	csrLogger.Infof("CSR syncer configured: localNamespace=%s clusterID=%s brokerNamespace=%s",
+		syncerConfig.LocalNamespace, localCID, syncerConfig.BrokerNamespace)
+
 	syncerConfig.ResourceConfigs = []broker.ResourceConfig{
 		{
 
@@ -126,7 +152,9 @@ func SetupCertificateSecretSyncer(syncerConfig broker.SyncerConfig) (*broker.Syn
 				secret := from.(*corev1.Secret)
 
 				// Filter: only Secrets for this cluster
-				if secret.Labels[CertLabelKey] != syncerConfig.LocalClusterID {
+				if secret.Labels[CertLabelKey] != localCID {
+					csrLogger.V(1).Infof("local->broker skip %s/%s: %s=%q want %q",
+						secret.Namespace, secret.Name, CertLabelKey, secret.Labels[CertLabelKey], localCID)
 					return nil, false
 				}
 
@@ -134,21 +162,35 @@ func SetupCertificateSecretSyncer(syncerConfig broker.SyncerConfig) (*broker.Syn
 				newSecret := secret.DeepCopy()
 				delete(newSecret.Data, PrivateKeyDataKey)
 
+				csrLogger.V(1).Infof("local->broker sync %s/%s", newSecret.Namespace, newSecret.Name)
 				return newSecret, true
 			},
 			BrokerResourceType: &corev1.Secret{},
 			TransformBrokerToLocal: func(from runtime.Object, numRequeues int, op syncer.Operation) (runtime.Object, bool) {
 				secret := from.(*corev1.Secret)
 
-				if secret.Labels[CertLabelKey] != syncerConfig.LocalClusterID {
+				// Unconditional snapshot before checks
+				_, hasCrt := secret.Data[SignedCertDataKey]
+				_, hasCA := secret.Data["ca.crt"]
+				_, hasSigned := secret.Annotations["submariner.io/csr-request-signed"]
+				csrLogger.V(1).Infof("broker->local inspect %s/%s: %s=%q signedAnno=%t tls.crt=%t ca.crt=%t",
+					secret.Namespace, secret.Name, CertLabelKey, secret.Labels[CertLabelKey], hasSigned, hasCrt, hasCA)
+
+				if secret.Labels[CertLabelKey] != localCID {
+					csrLogger.Infof("broker->local skip %s/%s: %s=%q want %q",
+						secret.Namespace, secret.Name, CertLabelKey, secret.Labels[CertLabelKey], localCID)
 					return nil, false
 				}
 
 				if _, ok := secret.Annotations["submariner.io/csr-request-signed"]; !ok {
+					csrLogger.Infof("broker->local skip %s/%s: annotation submariner.io/csr-request-signed missing",
+						secret.Namespace, secret.Name)
 					return nil, false
 				}
 
 				if _, ok := secret.Data[SignedCertDataKey]; !ok {
+					csrLogger.Infof("broker->local skip %s/%s: %s missing",
+						secret.Namespace, secret.Name, SignedCertDataKey)
 					return nil, false
 				}
 
@@ -169,6 +211,9 @@ func SetupCertificateSecretSyncer(syncerConfig broker.SyncerConfig) (*broker.Syn
 						}
 					}
 				}
+
+				csrLogger.Infof("broker->local sync %s/%s -> %s (preserving key if present)",
+					secret.Namespace, secret.Name, syncerConfig.LocalNamespace)
 
 				return secret, true
 			},

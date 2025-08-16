@@ -19,6 +19,7 @@ limitations under the License.
 package ovn
 
 import (
+	"log"
 	"os"
 	"strconv"
 
@@ -88,7 +89,11 @@ func (ovn *Handler) updateGatewayDataplane() error {
 		return errors.Wrap(err, "error adding submariner default")
 	}
 
-	return ovn.setupForwardingIptables()
+	if err := ovn.setupForwardingIptables(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 const (
@@ -202,6 +207,30 @@ func (ovn *Handler) removeNoMasqueradeIPTables(subnet string) error {
 	return ovn.updateNoMasqueradeRules(subnet, false)
 }
 
+func (ovn *Handler) addSelfSNATRule(subnet string) error {
+	// Add SNAT rule for destination
+	dRule := &packetfilter.Rule{
+		DestCIDR: subnet,
+		Action:   packetfilter.RuleActionSNAT,
+		SnatCIDR: "ip saddr", // self-SNAT
+	}
+	if err := ovn.pFilter.AppendUnique(packetfilter.TableTypeNAT, ChainSubmarinerSNAT, dRule); err != nil {
+		return errors.Wrapf(err, "error adding SNAT rule for daddr %q", subnet)
+	}
+
+	// Add SNAT rule for source
+	sRule := &packetfilter.Rule{
+		SrcCIDR:  subnet,
+		Action:   packetfilter.RuleActionSNAT,
+		SnatCIDR: "ip saddr", // self-SNAT
+	}
+	if err := ovn.pFilter.AppendUnique(packetfilter.TableTypeNAT, ChainSubmarinerSNAT, sRule); err != nil {
+		return errors.Wrapf(err, "error adding SNAT rule for saddr %q", subnet)
+	}
+
+	return nil
+}
+
 func (ovn *Handler) cleanupForwardingIptables() error {
 	if err := ovn.pFilter.DeleteIPHookChain(&packetfilter.ChainIPHook{
 		Name:     ForwardingSubmarinerMSSClampChain,
@@ -242,6 +271,15 @@ func (ovn *Handler) initIPtablesChains() error {
 		Priority: packetfilter.ChainPriorityFirst,
 	}); err != nil {
 		return errors.Wrapf(err, "error installing %q IPHook chain", constants.SmPostRoutingChain)
+	}
+
+	// Ensure SUBMARINER-SNAT chain exists
+	chain := &packetfilter.Chain{
+		Name:   ChainSubmarinerSNAT,
+		Policy: packetfilter.ChainPolicyAccept,
+	}
+	if err := ovn.pFilter.CreateChainIfNotExists(packetfilter.TableTypeNAT, chain); err != nil {
+		return errors.Wrapf(err, "error creating chain %q", ChainSubmarinerSNAT)
 	}
 
 	if err := ovn.ensureForwardChains(); err != nil {
