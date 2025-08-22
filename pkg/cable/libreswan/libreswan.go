@@ -382,58 +382,88 @@ func toConnectionName(cableName string, family k8snet.IPFamily, lsi, rsi int) st
 	return fmt.Sprintf("%s-v%s-%d-%d", cableName, family, lsi, rsi)
 }
 
+// Helper: parse 'ipsec status' output and update connection status/traffic
+func (i *libreswan) parseIpsecStatus(conns map[string]*subv1.Connection) error {
+	var ipsecCmd string
+	var ipsecEnv []string
+
+	if i.authMode == AuthModeCert {
+		ipsecCmd = "/usr/local/ipsec-bin/ipsec"
+		ipsecEnv = append(os.Environ(), "LD_LIBRARY_PATH=/usr/local/ipsec-lib64")
+	} else {
+		ipsecCmd = "/usr/sbin/ipsec"
+		ipsecEnv = os.Environ()
+	}
+
+	cmd := exec.Command(ipsecCmd, "status")
+	cmd.Env = ipsecEnv
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(output), "\n")
+	var (
+		connNameRE = regexp.MustCompile(`"([^"]+)"`)
+		trafficRE  = regexp.MustCompile(`Traffic: ESPin=([0-9A-Za-z]+) ESPout=([0-9A-Za-z]+)`)
+	)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		nameMatch := connNameRE.FindStringSubmatch(line)
+		if len(nameMatch) > 1 {
+			connName := nameMatch[1]
+			conn, ok := conns[connName]
+			if !ok {
+				continue
+			}
+			if strings.Contains(line, "ESTABLISHED_IKE_SA") || strings.Contains(line, "ESTABLISHED_CHILD_SA") {
+				conn.Status = subv1.Connected
+				conn.StatusMessage = line
+			}
+			if traffic := trafficRE.FindStringSubmatch(line); len(traffic) == 3 {
+				if conn.StatusMessage != "" {
+					conn.StatusMessage += "; "
+				}
+				conn.StatusMessage += fmt.Sprintf("Traffic: ESPin=%s ESPout=%s", traffic[1], traffic[2])
+			}
+		}
+	}
+	return nil
+}
+
 func (i *libreswan) refreshConnectionStatus() error {
+	if i.authMode == AuthModeCert {
+		// For cert mode, do not run or parse ip xfrm state. Just populate other fields.
+		for j := range i.connections {
+			conn := &i.connections[j]
+			conn.UsingNAT = conn.Endpoint.NATEnabled
+		}
+		return nil
+	}
+	// PSK mode: use original logic
 	activeConnectionsRx, activeConnectionsTx, err := retrieveActiveConnectionStats()
 	if err != nil {
 		return err
 	}
-
 	localSubnetsByFamily := make(map[k8snet.IPFamily][]string)
-
 	localSubnetsByFamily[k8snet.IPv4] = i.localEndpoint.ExtractSubnetsExcludingIP(i.localEndpoint.GetPrivateIP(k8snet.IPv4))
 	localSubnetsByFamily[k8snet.IPv6] = i.localEndpoint.ExtractSubnetsExcludingIP(i.localEndpoint.GetPrivateIP(k8snet.IPv6))
-
 	for j := range i.connections {
+		connectionName := toConnectionName(i.connections[j].Endpoint.CableName, i.connections[j].GetFamily(), 0, 0)
+		_, okRx := activeConnectionsRx[connectionName]
+		subTx := activeConnectionsTx[connectionName]
 		isConnected := false
-
-		connectionFamily := i.connections[j].GetFamily()
-		remoteSubnets := i.connections[j].Endpoint.ExtractSubnetsExcludingIP(i.connections[j].Endpoint.GetPrivateIP(connectionFamily))
-
-		rx, tx := 0, 0
-
-		for lsi := range localSubnetsByFamily[connectionFamily] {
-			for rsi := range remoteSubnets {
-				connectionName := toConnectionName(i.connections[j].Endpoint.CableName, connectionFamily, lsi, rsi)
-				subRx, okRx := activeConnectionsRx[connectionName]
-				subTx, okTx := activeConnectionsTx[connectionName]
-
-				if okRx || okTx {
-					i.connections[j].Status = subv1.Connected
-					isConnected = true
-					rx += subRx
-					tx += subTx
-				} else {
-					logger.V(log.DEBUG).Infof("Connection %q not found in active connections obtained from whack: %v, %v",
-						connectionName, activeConnectionsRx, activeConnectionsTx)
-				}
-			}
+		if okRx {
+			i.connections[j].Status = subv1.Connected
+			isConnected = true
 		}
-
-		cable.RecordConnection(cableDriverName, &i.localEndpoint, &i.connections[j].Endpoint, string(i.connections[j].Status), false,
-			connectionFamily)
-		cable.RecordRxBytes(cableDriverName, &i.localEndpoint, &i.connections[j].Endpoint, rx, connectionFamily)
-		cable.RecordTxBytes(cableDriverName, &i.localEndpoint, &i.connections[j].Endpoint, tx, connectionFamily)
-
+		if okRx || subTx > 0 {
+			i.connections[j].Status = subv1.Connected
+			isConnected = true
+		}
 		if !isConnected {
-			// Pluto should be connecting for us
 			i.connections[j].Status = subv1.Connecting
-			cable.RecordConnection(cableDriverName, &i.localEndpoint, &i.connections[j].Endpoint, string(i.connections[j].Status), false,
-				connectionFamily)
-			logger.V(log.DEBUG).Infof("Connection %q not found in active connections obtained from whack: %v, %v",
-				i.connections[j].Endpoint.CableName, activeConnectionsRx, activeConnectionsTx)
 		}
 	}
-
 	return nil
 }
 
@@ -493,29 +523,82 @@ func (i *libreswan) ConnectToEndpoint(endpointInfo *natdiscovery.NATEndpointInfo
 	return i.connectToEndpointPSKMode(endpointInfo)
 }
 
-// connectToEndpointCertMode handles connection setup in certificate mode
+// Helper: check if a stanza for connName exists in submariner.conf
+func stanzaExists(confPath, connName string) (bool, error) {
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	needle := "conn " + connName + "\n"
+	return strings.Contains(string(data), needle), nil
+}
+
+// Helper: append a connection stanza, replacing any existing one for connName
+func appendConnectionStanza(confPath, stanza, connName string) error {
+	// Remove existing stanza if present
+	if err := removeConnectionStanza(confPath, connName); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(confPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(stanza)
+	return err
+}
+
+// Helper: remove a connection stanza by connName; delete file if empty
+func removeConnectionStanza(confPath, connName string) error {
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	inStanza := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) == ("conn "+connName) {
+			inStanza = true
+			continue
+		}
+		if inStanza && strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) != ("conn "+connName) {
+			inStanza = false
+		}
+		if !inStanza {
+			out = append(out, line)
+		}
+	}
+	// Remove trailing empty lines
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	if len(out) == 0 {
+		return os.Remove(confPath)
+	}
+	return os.WriteFile(confPath, []byte(strings.Join(out, "\n")+"\n"), 0644)
+}
+
 func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndpointInfo) (string, error) {
 	logger.Info("Certificate mode: skipping pluto start and whack; assuming pluto is managed externally and config/NSS DB are updated.")
 
-	// Write submariner.conf
+	// Write submariner.conf (append mode)
 	confPath := "/etc/ipsec.d/submariner.conf"
 	endpoint := &endpointInfo.Endpoint
 	leftID := fmt.Sprintf("submariner-client-%s", i.localEndpoint.ClusterID)
-	//rightID := fmt.Sprintf("submariner-client-%s", endpoint.Spec.ClusterID)
 	connName := endpoint.Spec.CableName
 	left := i.localEndpoint.GetPrivateIP(endpointInfo.UseFamily)
 	right := endpointInfo.UseIP
 	leftSubnets := i.localEndpoint.Subnets
 	rightSubnets := endpoint.Spec.Subnets
-
-	/*leftNATTPort, err := i.localEndpoint.GetBackendPort(subv1.UDPPortConfig, i.defaultNATTPort)
-	if err != nil {
-		return "", errors.Wrapf(err, "error parsing %q from local endpoint", subv1.UDPPortConfig)
-	}
-	rightNATTPort, err := endpoint.Spec.GetBackendPort(subv1.UDPPortConfig, i.defaultNATTPort)
-	if err != nil {
-		return "", errors.Wrapf(err, "error parsing %q from local endpoint", subv1.UDPPortConfig)
-	}*/
+	// rightID := fmt.Sprintf("submariner-client-%s", endpoint.Spec.ClusterID) // no longer needed
 
 	conf := fmt.Sprintf(`conn %s
     left=%s
@@ -530,8 +613,7 @@ func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndp
     auto=add
     ikev2=insist
     authby=rsasig
-    type=tunnel
-`,
+    type=tunnel`,
 		connName,
 		left,
 		leftID,
@@ -539,12 +621,33 @@ func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndp
 		right,
 		joinSubnets(rightSubnets),
 	)
-
-	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
-		logger.Errorf(err, "Failed to write %s", confPath)
+	if err := appendConnectionStanza(confPath, conf, connName); err != nil {
+		logger.Errorf(err, "Failed to append connection stanza to %s", confPath)
 		return "", err
 	}
-	logger.Infof("Wrote Libreswan connection config to %s", confPath)
+	logger.Infof("Appended Libreswan connection config for %s to %s", connName, confPath)
+
+	// Load the connection into Pluto using the host's ipsec binary
+	cmd := exec.Command("/host-ipsec-bin/ipsec", "auto", "--add", connName)
+	cmd.Env = append(os.Environ(),
+		"LD_LIBRARY_PATH=/host-ipsec/lib",
+		"PATH=/host-ipsec-bin:/host-ipsec-libexec:"+os.Getenv("PATH"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Errorf(err, "Failed to load connection %s into Pluto: %s", connName, string(output))
+	} else {
+		logger.Infof("Loaded connection %s into Pluto: %s", connName, string(output))
+	}
+
+	i.plutoStarted = true
+	i.connections = append(i.connections,
+		subv1.Connection{
+			Endpoint: endpoint.Spec,
+			Status:   subv1.Connected, // Set to Connected when endpoint is added
+			UsingIP:  endpointInfo.UseIP,
+			UsingNAT: endpointInfo.UseNAT,
+		})
 	return "", nil
 }
 
@@ -751,6 +854,16 @@ func (i *libreswan) clientConnectToEndpoint(connectionName string, endpointInfo 
 
 // DisconnectFromEndpoint disconnects from the connection to the given endpoint.
 func (i *libreswan) DisconnectFromEndpoint(endpoint *types.SubmarinerEndpoint, family k8snet.IPFamily) error {
+	if i.authMode == AuthModeCert {
+		confPath := "/etc/ipsec.d/submariner.conf"
+		connName := endpoint.Spec.CableName
+		if err := removeConnectionStanza(confPath, connName); err != nil {
+			logger.Errorf(err, "Failed to remove connection stanza for %s from %s", connName, confPath)
+			return err
+		}
+		logger.Infof("Removed Libreswan connection config for %s from %s", connName, confPath)
+		return nil
+	}
 	// We'll panic if endpoint is nil, this is intentional
 	leftSubnets := i.localEndpoint.ExtractSubnetsExcludingIP(i.localEndpoint.GetPrivateIP(family))
 	rightSubnets := endpoint.Spec.ExtractSubnetsExcludingIP(endpoint.Spec.GetPrivateIP(family))
