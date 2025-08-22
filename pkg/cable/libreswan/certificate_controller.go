@@ -41,20 +41,22 @@ var certLogger = log.Logger{Logger: logf.Log.WithName("certificate-controller")}
 
 // CertificateController watches certificate secrets and loads them into NSS database
 type CertificateController struct {
-	client    dynamic.Interface
-	clusterID string
-	nssDBDir  string
-	stopCh    chan struct{}
-	informer  cache.SharedIndexInformer
+	client         dynamic.Interface
+	clusterID      string
+	localNameSpace string
+	nssDBDir       string
+	stopCh         chan struct{}
+	informer       cache.SharedIndexInformer
 }
 
 // NewCertificateController creates a new certificate controller
-func NewCertificateController(client dynamic.Interface, clusterID string) *CertificateController {
+func NewCertificateController(client dynamic.Interface, localNameSpace, clusterID string) *CertificateController {
 	return &CertificateController{
-		client:    client,
-		clusterID: clusterID,
-		nssDBDir:  "/var/lib/ipsec/nss",
-		stopCh:    make(chan struct{}),
+		client:         client,
+		clusterID:      clusterID,
+		localNameSpace: localNameSpace,
+		nssDBDir:       "/var/lib/ipsec/nss",
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -62,7 +64,7 @@ func NewCertificateController(client dynamic.Interface, clusterID string) *Certi
 func (c *CertificateController) Start() error {
 	certSecretName := getCertSecretName(c.clusterID)
 
-	certLogger.Info("Starting certificate controller", "secretName", certSecretName, "namespace", LocalNamespace)
+	certLogger.Info("Starting certificate controller", "secretName", certSecretName, "namespace", c.localNameSpace)
 
 	// Start a simple watcher goroutine
 	go c.watchCertificateSecret()
@@ -77,7 +79,34 @@ func (c *CertificateController) Start() error {
 // Stop stops the certificate controller
 func (c *CertificateController) Stop() {
 	certLogger.Info("Stopping certificate controller")
+	c.cleanupCertificateFromNSS()
 	close(c.stopCh)
+}
+
+// cleanupCertificateFromNSS deletes the Submariner client and CA certificates from the NSS database
+func (c *CertificateController) cleanupCertificateFromNSS() {
+	certName := fmt.Sprintf("submariner-client-%s", c.clusterID)
+	caName := "submariner-ca"
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	defer cancel()
+
+	// Delete client certificate
+	cmd := exec.CommandContext(ctx, "certutil", "-D", "-d", "sql:"+c.nssDBDir, "-n", certName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		certLogger.Warningf("Failed to delete client certificate from NSS database: %v, output: %s", err, string(output))
+	} else {
+		certLogger.Infof("Deleted Submariner client certificate from NSS database: %s", certName)
+	}
+
+	// Delete CA certificate
+	cmd = exec.CommandContext(ctx, "certutil", "-D", "-d", "sql:"+c.nssDBDir, "-n", caName)
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		certLogger.Warningf("Failed to delete CA certificate from NSS database: %v, output: %s", err, string(output))
+	} else {
+		certLogger.Infof("Deleted Submariner CA certificate from NSS database: %s", caName)
+	}
 }
 
 // watchCertificateSecret implements a simple polling-based watcher
@@ -109,7 +138,7 @@ func (c *CertificateController) checkAndLoadCertificate() {
 
 	// Try to get the secret
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
-	secretClient := c.client.Resource(gvr).Namespace(LocalNamespace)
+	secretClient := c.client.Resource(gvr).Namespace(c.localNameSpace)
 
 	unstructuredSecret, err := secretClient.Get(context.TODO(), certSecretName, metav1.GetOptions{})
 	if err != nil {

@@ -23,7 +23,6 @@ import (
 
 const (
 	RSABitSize        = 2048
-	LocalNamespace    = "submariner-operator"
 	CertLabelKey      = "submariner.io/csr-request"
 	PrivateKeyDataKey = "tls.key"
 	CSRDataKey        = "csr.pem"
@@ -39,7 +38,7 @@ func getCertSecretName(clusterID string) string {
 
 func (i *libreswan) EnsureCertificateSecret(clusterID string, sanIPs []string) error {
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
-	secretClient := i.syncerConfig.LocalClient.Resource(gvr).Namespace(LocalNamespace)
+	secretClient := i.syncerConfig.LocalClient.Resource(gvr).Namespace(i.syncerConfig.LocalNamespace)
 
 	certSecretName := getCertSecretName(clusterID)
 	_, err := secretClient.Get(context.TODO(), certSecretName, metav1.GetOptions{})
@@ -60,7 +59,7 @@ func (i *libreswan) EnsureCertificateSecret(clusterID string, sanIPs []string) e
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      certSecretName,
-			Namespace: LocalNamespace,
+			Namespace: i.syncerConfig.LocalNamespace,
 			Labels: map[string]string{
 				CertLabelKey: clusterID,
 			},
@@ -86,7 +85,7 @@ func (i *libreswan) DeleteCertificateSecret(ctx context.Context, clusterID strin
 
 	certSecretName := getCertSecretName(clusterID)
 	err := i.syncerConfig.LocalClient.Resource(gvr).
-		Namespace(LocalNamespace).
+		Namespace(i.syncerConfig.LocalNamespace).
 		Delete(ctx, certSecretName, metav1.DeleteOptions{})
 
 	return err
@@ -146,7 +145,7 @@ func SetupCertificateSecretSyncer(syncerConfig broker.SyncerConfig) (*broker.Syn
 	syncerConfig.ResourceConfigs = []broker.ResourceConfig{
 		{
 
-			LocalSourceNamespace: LocalNamespace,
+			LocalSourceNamespace: syncerConfig.LocalNamespace,
 			LocalResourceType:    &corev1.Secret{},
 			TransformLocalToBroker: func(from runtime.Object, numRequeues int, op syncer.Operation) (runtime.Object, bool) {
 				secret := from.(*corev1.Secret)

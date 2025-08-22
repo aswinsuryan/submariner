@@ -41,19 +41,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/submariner-io/admiral/pkg/syncer/broker"
-	"k8s.io/client-go/dynamic"
-
 	"github.com/kelseyhightower/envconfig"
 	"github.com/pkg/errors"
 	"github.com/submariner-io/admiral/pkg/command"
 	"github.com/submariner-io/admiral/pkg/log"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
 	subv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
 	submendpoint "github.com/submariner-io/submariner/pkg/endpoint"
 	"github.com/submariner-io/submariner/pkg/natdiscovery"
 	"github.com/submariner-io/submariner/pkg/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	k8snet "k8s.io/utils/net"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -297,7 +298,7 @@ func (i *libreswan) Init() error {
 		}()
 
 		// Start certificate controller to watch and load certificates into NSS database
-		certController := NewCertificateController(i.syncerConfig.LocalClient, i.localEndpoint.ClusterID)
+		certController := NewCertificateController(i.syncerConfig.LocalClient, i.syncerConfig.LocalNamespace, i.localEndpoint.ClusterID)
 		if err := certController.Start(); err != nil {
 			logger.Error(err, "Failed to start certificate controller")
 			return errors.Wrap(err, "error starting certificate controller")
@@ -312,6 +313,10 @@ func (i *libreswan) Init() error {
 	}
 
 	return nil
+}
+
+func toConnectionName(cableName string, family k8snet.IPFamily, lsi, rsi int) string {
+	return fmt.Sprintf("%s-v%s-%d-%d", cableName, family, lsi, rsi)
 }
 
 // Line format:
@@ -378,8 +383,9 @@ func retrieveActiveConnectionStats() (map[string]int, map[string]int, error) {
 	return activeConnectionsRx, activeConnectionsTx, errors.Wrap(cmd.Wait(), "error waiting for whack to complete")
 }
 
-func toConnectionName(cableName string, family k8snet.IPFamily, lsi, rsi int) string {
-	return fmt.Sprintf("%s-v%s-%d-%d", cableName, family, lsi, rsi)
+// GetActiveConnections returns an array of all the active connections.
+func (i *libreswan) GetActiveConnections() ([]subv1.Connection, error) {
+	return i.connections, nil
 }
 
 func (i *libreswan) refreshConnectionStatus() error {
@@ -437,11 +443,6 @@ func (i *libreswan) refreshConnectionStatus() error {
 	return nil
 }
 
-// GetActiveConnections returns an array of all the active connections.
-func (i *libreswan) GetActiveConnections() ([]subv1.Connection, error) {
-	return i.connections, nil
-}
-
 // GetConnections() returns an array of the existing connections, including status and endpoint info.
 func (i *libreswan) GetConnections() ([]subv1.Connection, error) {
 	if !i.plutoStarted {
@@ -493,29 +494,68 @@ func (i *libreswan) ConnectToEndpoint(endpointInfo *natdiscovery.NATEndpointInfo
 	return i.connectToEndpointPSKMode(endpointInfo)
 }
 
-// connectToEndpointCertMode handles connection setup in certificate mode
+// Helper: append a connection stanza, replacing any existing one for connName
+func appendConnectionStanza(confPath, stanza, connName string) error {
+	// Remove existing stanza if present
+	if err := removeConnectionStanza(confPath, connName); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(confPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(stanza)
+	return err
+}
+
+// Helper: remove a connection stanza by connName; delete file if empty
+func removeConnectionStanza(confPath, connName string) error {
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	inStanza := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) == ("conn "+connName) {
+			inStanza = true
+			continue
+		}
+		if inStanza && strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) != ("conn "+connName) {
+			inStanza = false
+		}
+		if !inStanza {
+			out = append(out, line)
+		}
+	}
+	// Remove trailing empty lines
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	if len(out) == 0 {
+		return os.Remove(confPath)
+	}
+	return os.WriteFile(confPath, []byte(strings.Join(out, "\n")+"\n"), 0644)
+}
 func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndpointInfo) (string, error) {
 	logger.Info("Certificate mode: skipping pluto start and whack; assuming pluto is managed externally and config/NSS DB are updated.")
 
-	// Write submariner.conf
+	// Write submariner.conf (append mode)
 	confPath := "/etc/ipsec.d/submariner.conf"
 	endpoint := &endpointInfo.Endpoint
 	leftID := fmt.Sprintf("submariner-client-%s", i.localEndpoint.ClusterID)
-	//rightID := fmt.Sprintf("submariner-client-%s", endpoint.Spec.ClusterID)
-	connName := endpoint.Spec.CableName
+	connName := toConnectionName(endpoint.Spec.CableName, endpointInfo.UseFamily, 0, 0)
 	left := i.localEndpoint.GetPrivateIP(endpointInfo.UseFamily)
 	right := endpointInfo.UseIP
 	leftSubnets := i.localEndpoint.Subnets
 	rightSubnets := endpoint.Spec.Subnets
-
-	/*leftNATTPort, err := i.localEndpoint.GetBackendPort(subv1.UDPPortConfig, i.defaultNATTPort)
-	if err != nil {
-		return "", errors.Wrapf(err, "error parsing %q from local endpoint", subv1.UDPPortConfig)
-	}
-	rightNATTPort, err := endpoint.Spec.GetBackendPort(subv1.UDPPortConfig, i.defaultNATTPort)
-	if err != nil {
-		return "", errors.Wrapf(err, "error parsing %q from local endpoint", subv1.UDPPortConfig)
-	}*/
+	// rightID := fmt.Sprintf("submariner-client-%s", endpoint.Spec.ClusterID) // no longer needed
 
 	conf := fmt.Sprintf(`conn %s
     left=%s
@@ -530,8 +570,7 @@ func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndp
     auto=add
     ikev2=insist
     authby=rsasig
-    type=tunnel
-`,
+    type=tunnel`,
 		connName,
 		left,
 		leftID,
@@ -539,12 +578,40 @@ func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndp
 		right,
 		joinSubnets(rightSubnets),
 	)
-
-	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
-		logger.Errorf(err, "Failed to write %s", confPath)
+	if err := appendConnectionStanza(confPath, conf, connName); err != nil {
+		logger.Errorf(err, "Failed to append connection stanza to %s", confPath)
 		return "", err
 	}
-	logger.Infof("Wrote Libreswan connection config to %s", confPath)
+	logger.Infof("Appended Libreswan connection config for %s to %s", connName, confPath)
+
+	// Load the connection using the deprecated but still functional command
+	cmd := exec.Command("ipsec", "auto", "--add", connName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Errorf(err, "Failed to add connection with ipsec auto --add: %s", string(output))
+		return "", err
+	} else {
+		logger.Infof("Added connection with ipsec auto --add: %s", string(output))
+	}
+
+	// Now bring up the connection
+	cmd = exec.Command("ipsec", "whack", "--name", connName, "--initiate")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		logger.Errorf(err, "Failed to bring up connection %s with whack: %s", connName, string(output))
+		return "", err
+	} else {
+		logger.Infof("Brought up connection %s with whack: %s", connName, string(output))
+	}
+
+	i.plutoStarted = true
+	i.connections = append(i.connections,
+		subv1.Connection{
+			Endpoint: endpoint.Spec,
+			Status:   subv1.Connected, // Set to Connected when endpoint is added
+			UsingIP:  endpointInfo.UseIP,
+			UsingNAT: endpointInfo.UseNAT,
+		})
 	return "", nil
 }
 
@@ -751,6 +818,16 @@ func (i *libreswan) clientConnectToEndpoint(connectionName string, endpointInfo 
 
 // DisconnectFromEndpoint disconnects from the connection to the given endpoint.
 func (i *libreswan) DisconnectFromEndpoint(endpoint *types.SubmarinerEndpoint, family k8snet.IPFamily) error {
+	if i.authMode == AuthModeCert {
+		confPath := "/etc/ipsec.d/submariner.conf"
+		connName := endpoint.Spec.CableName
+		if err := removeConnectionStanza(confPath, connName); err != nil {
+			logger.Errorf(err, "Failed to remove connection stanza for %s from %s", connName, confPath)
+			return err
+		}
+		logger.Infof("Removed Libreswan connection config for %s from %s", connName, confPath)
+		return nil
+	}
 	// We'll panic if endpoint is nil, this is intentional
 	leftSubnets := i.localEndpoint.ExtractSubnetsExcludingIP(i.localEndpoint.GetPrivateIP(family))
 	rightSubnets := endpoint.Spec.ExtractSubnetsExcludingIP(endpoint.Spec.GetPrivateIP(family))
@@ -885,6 +962,25 @@ func (i *libreswan) Cleanup() error {
 	if i.stopCh != nil {
 		close(i.stopCh)
 	}
+
+	// Delete the submariner-certificate-<cluster-id> Secret directly by name using dynamic.Interface
+	if i.syncerConfig.LocalClient != nil {
+		secretGVR := schema.GroupVersionResource{
+			Group:    "",
+			Version:  "v1",
+			Resource: "secrets",
+		}
+		secretName := "submariner-certificate-" + i.localEndpoint.ClusterID
+		_ = i.syncerConfig.LocalClient.Resource(secretGVR).Namespace(i.syncerConfig.LocalNamespace).Delete(
+			context.TODO(),
+			secretName,
+			metav1.DeleteOptions{},
+		)
+	}
+
+	// Delete submariner.conf on uninstall
+	confPath := "/etc/ipsec.d/submariner.conf"
+	os.Remove(confPath)
 
 	return nil
 }
