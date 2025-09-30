@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log"
 	v1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
@@ -78,7 +79,9 @@ func init() {
 	cable.AddDriver(CableDriverName, NewDriver)
 }
 
-func NewDriver(localEndpoint *submendpoint.Local, localCluster *types.SubmarinerCluster) (cable.Driver, error) {
+func NewDriver(localEndpoint *submendpoint.Local,
+	localCluster *types.SubmarinerCluster, signingRequestor certificate.SigningRequestor,
+) (cable.Driver, error) {
 	// We'll panic if localEndpoint or localCluster are nil, this is intentional
 	var err error
 

@@ -26,6 +26,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	. "github.com/submariner-io/admiral/pkg/gomega"
 	"github.com/submariner-io/admiral/pkg/log/kzerolog"
 	subv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
@@ -49,7 +50,9 @@ var fakeDriver *fake.Driver
 
 var _ = BeforeSuite(func() {
 	kzerolog.InitK8sLogging()
-	cable.AddDriver(fake.DriverName, func(_ *submendpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+	cable.AddDriver(fake.DriverName, func(_ *submendpoint.Local, _ *types.SubmarinerCluster,
+		_ certificate.SigningRequestor,
+	) (cable.Driver, error) {
 		return fakeDriver, nil
 	})
 })
@@ -228,7 +231,7 @@ func newTestDriver() *testDriver {
 			return
 		}
 
-		err := t.engine.StartEngine()
+		err := t.engine.StartEngine(nil)
 		if fakeDriver.ErrOnInit != nil {
 			Expect(err).To(ContainErrorSubstring(fakeDriver.ErrOnInit))
 		} else {

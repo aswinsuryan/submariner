@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log/kzerolog"
 	"github.com/submariner-io/admiral/pkg/syncer/test"
 	"github.com/submariner-io/admiral/pkg/watcher"
@@ -60,7 +61,9 @@ var fakeDriver *fake.Driver
 
 var _ = BeforeSuite(func() {
 	kzerolog.InitK8sLogging()
-	cable.AddDriver(fake.DriverName, func(_ *submendpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+	cable.AddDriver(fake.DriverName, func(_ *submendpoint.Local, _ *types.SubmarinerCluster,
+		_ certificate.SigningRequestor,
+	) (cable.Driver, error) {
 		return fakeDriver, nil
 	})
 })
@@ -125,7 +128,7 @@ var _ = Describe("Managing tunnels", func() {
 
 		engine.SetupNATDiscovery(nat)
 
-		Expect(engine.StartEngine()).To(Succeed())
+		Expect(engine.StartEngine(nil)).To(Succeed())
 
 		stopCh = make(chan struct{})
 

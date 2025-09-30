@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log"
 	v1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/endpoint"
@@ -57,7 +58,8 @@ type Driver interface {
 }
 
 // Function prototype to create a new driver.
-type DriverCreateFunc func(localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error)
+type DriverCreateFunc func(localEndpoint *endpoint.Local,
+	localCluster *types.SubmarinerCluster, signingRequestor certificate.SigningRequestor) (Driver, error)
 
 const (
 	InterfaceNameConfig = "interface-name"
@@ -82,7 +84,9 @@ func AddDriver(name string, driverCreate DriverCreateFunc) {
 }
 
 // Returns a new driver according the required Backend.
-func NewDriver(localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster) (Driver, error) {
+func NewDriver(localEndpoint *endpoint.Local, localCluster *types.SubmarinerCluster,
+	signingRequestor certificate.SigningRequestor,
+) (Driver, error) {
 	// We'll panic if localEndpoint or localCluster are nil, this is intentional
 	spec := localEndpoint.Spec()
 
@@ -101,7 +105,7 @@ func NewDriver(localEndpoint *endpoint.Local, localCluster *types.SubmarinerClus
 		return nil, fmt.Errorf("unsupported cable type %s; supported types: %s", spec.Backend, driverList.String())
 	}
 
-	return driverCreate(localEndpoint, localCluster)
+	return driverCreate(localEndpoint, localCluster, signingRequestor)
 }
 
 // Sets the default cable driver name, if it is not specified by user.

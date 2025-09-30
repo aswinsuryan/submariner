@@ -279,8 +279,9 @@ func newTestDriver() *testDriver {
 	})
 
 	JustBeforeEach(func() {
-		d, err := vxlan.NewDriver(endpoint.NewLocal(&t.localEndpoint, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), ""),
-			t.localCluster)
+		d, err := vxlan.NewDriver(
+			endpoint.NewLocal(&t.localEndpoint, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), ""),
+			t.localCluster, nil)
 		Expect(err).To(Succeed())
 
 		Expect(d.Init()).To(Succeed())

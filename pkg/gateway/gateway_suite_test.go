@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log/kzerolog"
 	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
@@ -44,7 +45,9 @@ var _ = BeforeSuite(func() {
 	kzerolog.InitK8sLogging()
 	Expect(submarinerv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
-	cable.AddDriver(fake.DriverName, func(_ *endpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+	cable.AddDriver(fake.DriverName, func(_ *endpoint.Local, _ *types.SubmarinerCluster,
+		_ certificate.SigningRequestor,
+	) (cable.Driver, error) {
 		return fakeDriver, nil
 	})
 

@@ -34,13 +34,13 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/command"
 	"github.com/submariner-io/admiral/pkg/log"
 	subv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
 	submendpoint "github.com/submariner-io/submariner/pkg/endpoint"
 	"github.com/submariner-io/submariner/pkg/natdiscovery"
-	"github.com/submariner-io/submariner/pkg/netlink"
 	"github.com/submariner-io/submariner/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8snet "k8s.io/utils/net"
@@ -48,17 +48,30 @@ import (
 )
 
 const (
-	cableDriverName  = "libreswan"
-	whackTimeout     = 5 * time.Second
-	dpdDelay         = 30 // seconds
-	encryptArg       = "--encrypt"
-	forceencapsArg   = "--encapsulation=yes"
-	nameArg          = "--name"
-	hostArg          = "--host"
-	clientArg        = "--client"
-	ikeportArg       = "--ikeport"
-	dpdactionHoldArg = "--dpdaction=hold"
-	dpddelayArg      = "--dpddelay"
+	cableDriverName    = "libreswan"
+	submarinerConfPath = "/etc/ipsec.d/submariner.conf"
+	whackTimeout       = 5 * time.Second
+	dpdDelay           = 30 // seconds
+	encryptArg         = "--encrypt"
+	forceencapsArg     = "--encapsulation=yes"
+	nameArg            = "--name"
+	hostArg            = "--host"
+	clientArg          = "--client"
+	ikeportArg         = "--ikeport"
+	dpdactionHoldArg   = "--dpdaction=hold"
+	dpddelayArg        = "--dpddelay"
+	certArg            = "--cert"
+	caArg              = "--ca"
+)
+
+// AuthMode defines the authentication mode for libreswan.
+type AuthMode string
+
+const (
+	// AuthModePSK uses Pre-Shared Key authentication.
+	AuthModePSK AuthMode = "psk"
+	// AuthModeCert uses certificate-based authentication.
+	AuthModeCert AuthMode = "cert"
 )
 
 var (
@@ -94,6 +107,11 @@ type libreswan struct {
 	debug                 bool
 	forceUDPEncapsulation bool
 	plutoStarted          bool
+	authMode              AuthMode
+
+	stopCh                chan struct{}
+	certificateController *CertificateHandler
+	signingRequestor      certificate.SigningRequestor
 }
 
 type specification struct {
@@ -103,16 +121,33 @@ type specification struct {
 	PSKSecret   string
 	LogFile     string
 	NATTPort    string `default:"4500"`
+	AuthMode    string `default:"psk"` // Authentication mode: "psk" or "cert"
 }
 
 // NewLibreswan starts an IKE daemon using Libreswan and configures it to manage Submariner's endpoints.
-func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster,
+	signingRequestor certificate.SigningRequestor,
+) (cable.Driver, error) {
 	// We'll panic if localEndpoint is nil, this is intentional
 	ipSecSpec := specification{}
 
 	err := envconfig.Process(cable.IPSecEnvPrefix, &ipSecSpec)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error processing environment config for %s", cable.IPSecEnvPrefix)
+	}
+
+	// Parse and validate authentication mode with fallback to PSK
+	authModeStr := ipSecSpec.AuthMode
+	if authModeStr == "" {
+		// Fallback to default PSK mode if not set
+		authModeStr = string(AuthModePSK)
+
+		logger.Info("CE_IPSEC_AUTHMODE not set, defaulting to psk authentication")
+	}
+
+	authMode := AuthMode(authModeStr)
+	if authMode != AuthModePSK && authMode != AuthModeCert {
+		return nil, fmt.Errorf("invalid authentication mode %q, must be 'psk' or 'cert'", authModeStr)
 	}
 
 	port, err := strconv.ParseUint(ipSecSpec.NATTPort, 10, 16)
@@ -132,26 +167,30 @@ func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster)
 		return nil, err
 	}
 
-	encodedPsk := ipSecSpec.PSK
+	var encodedPsk string
 
-	if ipSecSpec.PSKSecret != "" {
-		pskBytes, err := os.ReadFile(RootDir + fmt.Sprintf("/var/run/secrets/submariner.io/%s/psk", ipSecSpec.PSKSecret))
-		if err != nil {
-			return nil, errors.Wrapf(err, "error reading secret %s", ipSecSpec.PSKSecret)
+	if authMode == AuthModePSK {
+		encodedPsk = ipSecSpec.PSK
+
+		if ipSecSpec.PSKSecret != "" {
+			pskBytes, err := os.ReadFile(RootDir + fmt.Sprintf("/var/run/secrets/submariner.io/%s/psk", ipSecSpec.PSKSecret))
+			if err != nil {
+				return nil, errors.Wrapf(err, "error reading secret %s", ipSecSpec.PSKSecret)
+			}
+			var psk strings.Builder
+			encoder := base64.NewEncoder(base64.StdEncoding, &psk)
+
+			if _, err := encoder.Write(pskBytes); err != nil {
+				return nil, errors.Wrap(err, "error encoding secret")
+			}
+
+			encoder.Close()
+
+			encodedPsk = psk.String()
 		}
-		var psk strings.Builder
-		encoder := base64.NewEncoder(base64.StdEncoding, &psk)
-
-		if _, err := encoder.Write(pskBytes); err != nil {
-			return nil, errors.Wrap(err, "error encoding secret")
-		}
-
-		encoder.Close()
-
-		encodedPsk = psk.String()
 	}
 
-	logger.Infof("Using NATT UDP port %d", nattPort)
+	logger.Infof("Using NATT UDP port %d with authentication mode: %s", nattPort, authMode)
 
 	return &libreswan{
 		secretKey:             encodedPsk,
@@ -163,6 +202,8 @@ func NewLibreswan(localEndpoint *submendpoint.Local, _ *types.SubmarinerCluster)
 		connections:           []subv1.Connection{},
 		forceUDPEncapsulation: ipSecSpec.ForceEncaps,
 		plutoStarted:          false,
+		authMode:              authMode,
+		signingRequestor:      signingRequestor,
 	}, nil
 }
 
@@ -173,15 +214,42 @@ func (i *libreswan) GetName() string {
 
 // Init initializes the driver with any state it needs.
 func (i *libreswan) Init() error {
-	// Write the secrets file:
-	// %any %any : PSK "secret"
-	file, err := os.Create(RootDir + "/etc/ipsec.d/submariner.secrets")
-	if err != nil {
-		return errors.Wrap(err, "error creating the secrets file")
-	}
-	defer file.Close()
+	logger.Infof("Initializing libreswan driver with authentication mode: %s", i.authMode)
 
-	fmt.Fprintf(file, "%%any %%any : PSK \"%s\"\n", i.secretKey)
+	if i.authMode == AuthModePSK {
+		logger.Info("Setting up PSK authentication")
+
+		// Write the secrets file: %any %any : PSK "secret"
+		file, err := os.Create(RootDir + "/etc/ipsec.d/submariner.secrets")
+		if err != nil {
+			return errors.Wrap(err, "error creating the secrets file")
+		}
+		defer file.Close()
+
+		fmt.Fprintf(file, "%%any %%any : PSK \"%s\"\n", i.secretKey)
+	} else if i.authMode == AuthModeCert {
+		logger.Info("Setting up certificate authentication")
+
+		logger.Infof("Starting certificate creation with Private IPs %s Public IPs %s", i.localEndpoint.PrivateIPs, i.localEndpoint.PublicIPs)
+		sanIPs := make([]string, 0, len(i.localEndpoint.PrivateIPs)+len(i.localEndpoint.PublicIPs))
+		sanIPs = append(sanIPs, i.localEndpoint.PrivateIPs...)
+		sanIPs = append(sanIPs, i.localEndpoint.PublicIPs...)
+
+		i.stopCh = make(chan struct{})
+
+		var err error
+
+		i.certificateController = NewCertificateHandler(i.localEndpoint.ClusterID)
+
+		err = i.signingRequestor.Issue(context.TODO(), "submariner-certificate", sanIPs, i.certificateController.OnSignedCallback)
+		if err != nil {
+			logger.Warningf("Unable to issue certificate: %v", err)
+		}
+
+		logger.Info("Started certificate syncers and controller")
+	} else {
+		return fmt.Errorf("unsupported authentication mode: %s", i.authMode)
+	}
 
 	return nil
 }
@@ -243,7 +311,7 @@ func retrieveActiveConnectionStats() (map[string]int, map[string]int, error) {
 				activeConnectionsTx[matches[1]] += outBytes
 			}
 		} else {
-			logger.V(log.DEBUG).Infof("Ignoring whack output line: %q", line)
+			logger.V(log.TRACE).Infof("Ignoring whack output line: %q", line)
 		}
 	}
 
@@ -359,6 +427,166 @@ func whack(args ...string) error {
 // ConnectToEndpoint establishes a connection to the given endpoint and returns a string
 // representation of the IP address of the target endpoint.
 func (i *libreswan) ConnectToEndpoint(endpointInfo *natdiscovery.NATEndpointInfo) (string, error) {
+	if i.authMode == AuthModeCert {
+		return i.connectToEndpointCertMode(endpointInfo)
+	}
+
+	return i.connectToEndpointPSKMode(endpointInfo)
+}
+
+func appendConnectionStanza(confPath, stanza, connName string) error {
+	if err := removeConnectionStanza(confPath, connName); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(confPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return errors.Wrap(err, "error opening file")
+	}
+
+	defer f.Close()
+
+	if !strings.HasSuffix(stanza, "\n") {
+		stanza += "\n"
+	}
+
+	_, err = f.WriteString(stanza)
+
+	return errors.Wrap(err, "error writing to file")
+}
+
+func removeConnectionStanza(confPath, connName string) error {
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return errors.Wrap(err, "error reading file")
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	inStanza := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) == ("conn "+connName) {
+			inStanza = true
+			continue
+		}
+
+		if inStanza && strings.HasPrefix(line, "conn ") && strings.TrimSpace(line) != ("conn "+connName) {
+			inStanza = false
+		}
+
+		if !inStanza {
+			out = append(out, line)
+		}
+	}
+
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+
+	if len(out) == 0 {
+		return errors.Wrap(os.Remove(confPath), "error removing file")
+	}
+
+	return errors.Wrap(os.WriteFile(confPath, []byte(strings.Join(out, "\n")+"\n"), 0o600), "error writing file")
+}
+
+func (i *libreswan) connectToEndpointCertMode(endpointInfo *natdiscovery.NATEndpointInfo) (string, error) {
+	logger.Info("Certificate mode: skipping pluto start and whack; assuming pluto is managed externally and config/NSS DB are updated.")
+
+	confPath := submarinerConfPath
+	endpoint := &endpointInfo.Endpoint
+	leftID := "submariner-client-" + i.localEndpoint.ClusterID
+	left := i.localEndpoint.GetPrivateIP(endpointInfo.UseFamily)
+	right := endpointInfo.UseIP
+	leftSubnets := i.localEndpoint.Subnets
+	rightSubnets := endpoint.Spec.Subnets
+
+	for lsi, leftSubnet := range leftSubnets {
+		for rsi, rightSubnet := range rightSubnets {
+			connName := toConnectionName(endpoint.Spec.CableName, endpointInfo.UseFamily, lsi, rsi)
+
+			encapsulationLine := ""
+			if endpointInfo.UseNAT || i.forceUDPEncapsulation {
+				encapsulationLine = "    encapsulation=yes\n"
+			}
+
+			conf := fmt.Sprintf(`conn %s
+    left=%s
+    leftid=%%fromcert
+    leftcert=%s
+    leftrsasigkey=%%cert
+    leftsubnet=%s
+    leftmodecfgclient=false
+    right=%s
+    rightid=%%fromcert
+    rightsubnet=%s
+%s    auto=add
+    ikev2=insist
+    authby=rsasig
+    type=tunnel`,
+				connName,
+				left,
+				leftID,
+				leftSubnet,
+				right,
+				rightSubnet,
+				encapsulationLine,
+			)
+			if err := appendConnectionStanza(confPath, conf, connName); err != nil {
+				logger.Errorf(err, "Failed to append connection stanza to %s", confPath)
+				return "", err
+			}
+
+			logger.Infof("Appended Libreswan connection config for %s to %s", connName, confPath)
+
+			cmd := exec.Command("ipsec", "auto", "--add", connName)
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				logger.Errorf(err, "Failed to add connection with ipsec auto --add: %s", string(output))
+				return "", errors.Wrap(err, "failed to add connection")
+			} else {
+				logger.Infof("Added connection with ipsec auto --add: %s", string(output))
+			}
+
+			connectionMode := i.calculateOperationMode(&endpoint.Spec)
+
+			logger.Infof("Connection mode for %s: %v", connName, connectionMode)
+
+			if connectionMode == operationModeClient || connectionMode == operationModeBidirectional {
+				whackArgs := []string{"--name", connName, "--initiate"}
+				//nolint:gosec // ipsec whack args are from trusted config
+				cmd = exec.Command("ipsec", append([]string{"whack"}, whackArgs...)...)
+
+				output, err = cmd.CombinedOutput()
+				if err != nil {
+					logger.Errorf(err, "Failed to bring up connection %s with whack: %s", connName, string(output))
+					return "", errors.Wrap(err, "failed to bring up connection")
+				} else {
+					logger.Infof("Brought up connection %s with whack: %s", connName, string(output))
+				}
+			}
+
+			i.connections = append(i.connections,
+				subv1.Connection{
+					Endpoint: endpoint.Spec,
+					UsingIP:  endpointInfo.UseIP,
+					UsingNAT: endpointInfo.UseNAT,
+				})
+		}
+	}
+
+	i.plutoStarted = true
+
+	return "", nil
+}
+
+func (i *libreswan) connectToEndpointPSKMode(endpointInfo *natdiscovery.NATEndpointInfo) (string, error) {
 	if !i.plutoStarted {
 		// Ensure Pluto is started
 		if err := i.runPluto(); err != nil {
@@ -387,7 +615,8 @@ func (i *libreswan) ConnectToEndpoint(endpointInfo *natdiscovery.NATEndpointInfo
 
 	connectionMode := i.calculateOperationMode(&endpoint.Spec)
 
-	logger.Infof("Creating IPv%v connection(s) for %v in %s mode", endpointInfo.UseFamily, endpoint, connectionMode)
+	logger.Infof("Creating IPv%v connection(s) for %v in %s mode with %s authentication",
+		endpointInfo.UseFamily, endpoint, connectionMode, i.authMode)
 
 	if len(leftSubnets) > 0 && len(rightSubnets) > 0 {
 		for lsi, leftSubnet := range leftSubnets {
@@ -557,6 +786,19 @@ func (i *libreswan) clientConnectToEndpoint(connectionName string, endpointInfo 
 
 // DisconnectFromEndpoint disconnects from the connection to the given endpoint.
 func (i *libreswan) DisconnectFromEndpoint(endpoint *types.SubmarinerEndpoint, family k8snet.IPFamily) error {
+	if i.authMode == AuthModeCert {
+		confPath := submarinerConfPath
+
+		connName := endpoint.Spec.CableName
+		if err := removeConnectionStanza(confPath, connName); err != nil {
+			logger.Errorf(err, "Failed to remove connection stanza for %s from %s", connName, confPath)
+			return err
+		}
+
+		logger.Infof("Removed Libreswan connection config for %s from %s", connName, confPath)
+
+		return nil
+	}
 	// We'll panic if endpoint is nil, this is intentional
 	leftSubnets := i.localEndpoint.ExtractSubnetsExcludingIP(i.localEndpoint.GetPrivateIP(family))
 	rightSubnets := endpoint.Spec.ExtractSubnetsExcludingIP(endpoint.Spec.GetPrivateIP(family))
@@ -682,5 +924,17 @@ func (i *libreswan) waitForControlSocket() error {
 func (i *libreswan) Cleanup() error {
 	logger.Info("Uninstalling the libreswan cable driver")
 
-	return netlink.DeleteXfrmRules(k8snet.IPFamilyUnknown) //nolint:wrapcheck  // No need to wrap this error
+	if i.certificateController != nil {
+		i.certificateController.Cleanup()
+	}
+
+	if i.stopCh != nil {
+		close(i.stopCh)
+	}
+
+	// Delete submariner.conf on uninstall
+	confPath := submarinerConfPath
+	os.Remove(confPath)
+
+	return nil
 }
