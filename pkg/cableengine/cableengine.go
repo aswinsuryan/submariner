@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log"
 	v1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
@@ -46,7 +47,7 @@ import (
 // a secure connection to remote clusters.
 type Engine interface {
 	// StartEngine performs any general set up work needed independent of any remote connections.
-	StartEngine() error
+	StartEngine(signingRequestor certificate.SigningRequestor) error
 	Stop()
 	// InstallCable performs any set up work needed for connecting to given remote endpoint.
 	// Once InstallCable completes, it should be possible to connect to remote
@@ -99,11 +100,11 @@ func (i *engine) GetLocalEndpoint() *types.SubmarinerEndpoint {
 	}
 }
 
-func (i *engine) StartEngine() error {
+func (i *engine) StartEngine(signingRequestor certificate.SigningRequestor) error {
 	i.Lock()
 	defer i.Unlock()
 
-	if err := i.startDriver(); err != nil {
+	if err := i.startDriver(signingRequestor); err != nil {
 		return err
 	}
 
@@ -123,14 +124,14 @@ func (i *engine) Stop() {
 	logger.Info("CableEngine stopped")
 }
 
-func (i *engine) startDriver() error {
+func (i *engine) startDriver(signingRequestor certificate.SigningRequestor) error {
 	if i.driver != nil {
 		return nil
 	}
 
 	var err error
 
-	if i.driver, err = cable.NewDriver(i.localEndpoint, &i.localCluster); err != nil {
+	if i.driver, err = cable.NewDriver(i.localEndpoint, &i.localCluster, signingRequestor); err != nil {
 		return errors.Wrap(err, "error creating the cable driver")
 	}
 

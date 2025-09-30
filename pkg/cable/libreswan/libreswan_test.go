@@ -32,6 +32,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	fakecommand "github.com/submariner-io/admiral/pkg/command/fake"
+	"github.com/submariner-io/admiral/pkg/syncer/broker"
 	subv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
 	"github.com/submariner-io/submariner/pkg/cable/libreswan"
@@ -750,7 +751,7 @@ func newTestDriver() *testDriver {
 
 		var err error
 
-		t.driver, err = libreswan.NewLibreswan(t.localEndpoint, &types.SubmarinerCluster{})
+		t.driver, err = libreswan.NewLibreswan(&broker.SyncerConfig{}, t.localEndpoint, &types.SubmarinerCluster{})
 		Expect(err).NotTo(HaveOccurred())
 	})
 

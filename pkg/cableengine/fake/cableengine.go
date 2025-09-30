@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	. "github.com/onsi/gomega"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	v1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cableengine"
 	"github.com/submariner-io/submariner/pkg/natdiscovery"
@@ -56,7 +57,7 @@ func New() *Engine {
 	}
 }
 
-func (e *Engine) StartEngine() error {
+func (e *Engine) StartEngine(signingRequestor certificate.SigningRequestor) error {
 	return e.ErrOnStart
 }
 

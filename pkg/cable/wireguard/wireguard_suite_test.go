@@ -108,7 +108,7 @@ func newTestDriver() *testDriver {
 
 		t.localEndpoint = endpoint.NewLocal(&t.endpointSpec, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), "")
 
-		t.driver, err = wireguard.NewDriver(t.localEndpoint, &types.SubmarinerCluster{})
+		t.driver, err = wireguard.NewDriver(t.localEndpoint, &types.SubmarinerCluster{}, nil)
 		t.checkNewDriverErr(err)
 	})
 

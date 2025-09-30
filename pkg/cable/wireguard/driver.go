@@ -28,6 +28,7 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/resource"
 	v1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
@@ -86,7 +87,9 @@ type wireguard struct {
 }
 
 // NewDriver creates a new WireGuard driver.
-func NewDriver(localEndpoint *endpoint.Local, _ *types.SubmarinerCluster) (cable.Driver, error) {
+func NewDriver(localEndpoint *endpoint.Local, _ *types.SubmarinerCluster,
+	signingRequestor certificate.SigningRequestor,
+) (cable.Driver, error) {
 	// We'll panic if localEndpoint is nil, this is intentional
 	var err error
 

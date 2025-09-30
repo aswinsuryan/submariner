@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/resource"
 	"github.com/submariner-io/admiral/pkg/syncer/broker"
@@ -81,8 +82,10 @@ type Config struct {
 	SubmarinerClient     submclientset.Interface
 	KubeClient           kubernetes.Interface
 	LeaderElectionClient kubernetes.Interface
-	NewCableEngine       func(localCluster *types.SubmarinerCluster, localEndpoint *endpoint.Local) cableengine.Engine
-	NewNATDiscovery      func(localEndpoint *endpoint.Local) (natdiscovery.Interface, error)
+	NewCableEngine       func(localCluster *types.SubmarinerCluster,
+		localEndpoint *endpoint.Local) cableengine.Engine
+	NewNATDiscovery  func(localEndpoint *endpoint.Local) (natdiscovery.Interface, error)
+	SigningRequestor certificate.SigningRequestor
 }
 
 type gatewayType struct {
@@ -152,8 +155,6 @@ func New(ctx context.Context, config *Config) (Interface, error) {
 
 	g.localEndpoint = endpoint.NewLocal(localEndpointSpec, g.SyncerConfig.LocalClient, g.Spec.Namespace)
 
-	g.cableEngine = g.NewCableEngine(localCluster, g.localEndpoint)
-
 	g.natDiscovery, err = g.NewNATDiscovery(g.localEndpoint)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating the NAT discovery handler")
@@ -164,6 +165,8 @@ func New(ctx context.Context, config *Config) (Interface, error) {
 	g.SyncerConfig.LocalNamespace = g.Spec.Namespace
 
 	g.datastoreSyncer = datastoresyncer.New(&g.SyncerConfig, localCluster, g.localEndpoint)
+
+	g.cableEngine = g.NewCableEngine(localCluster, g.localEndpoint)
 
 	g.initCableHealthChecker()
 
@@ -283,7 +286,7 @@ func (g *gatewayType) onStartedLeading(ctx context.Context) {
 
 	logger.Info("Leadership acquired - starting controllers")
 
-	if err := g.cableEngine.StartEngine(); err != nil {
+	if err := g.cableEngine.StartEngine(g.SigningRequestor); err != nil {
 		g.fatalError <- errors.Wrap(err, "error starting the cable engine")
 		return
 	}
@@ -337,6 +340,10 @@ func (g *gatewayType) onStoppedLeading(ctx context.Context) {
 	}
 
 	g.cableEngine.Stop()
+
+	if g.SigningRequestor != nil {
+		_ = g.SigningRequestor.Uninstall(ctx)
+	}
 
 	logger.Info("Controllers stopped")
 
@@ -414,7 +421,7 @@ func (g *gatewayType) initCableHealthChecker() {
 }
 
 func (g *gatewayType) uninstall(ctx context.Context) error {
-	err := g.cableEngine.StartEngine()
+	err := g.cableEngine.StartEngine(nil)
 	if err != nil {
 		// As we are in the process of cleaning up, ignore any initialization errors.
 		logger.Errorf(err, "Error starting the cable driver")
