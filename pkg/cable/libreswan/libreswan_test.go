@@ -48,6 +48,7 @@ import (
 )
 
 const (
+	authModeEnvVar = "CE_IPSEC_AUTHMODE"
 	localNATTPort  = "1234"
 	remoteNATTPort = "6789"
 )
@@ -76,7 +77,9 @@ var _ = Describe("Libreswan", func() {
 	Describe("NATT port configuration", testNATTPortConfiguration)
 	Describe("TrafficStatusRE", testTrafficStatusRE)
 	Describe("ConnectToEndpoint", testConnectToEndpoint)
-	Describe("DisconnectFromEndpoint", testDisconnectFromEndpoint)
+	DescribeTableSubtree("DisconnectFromEndpoint", testDisconnectFromEndpoint,
+		Entry("psk auth mode", libreswan.AuthModePSK),
+		Entry("cert auth mode", libreswan.AuthModeCert))
 	Describe("GetConnections", testGetConnections)
 	Describe("Preferred server config", testPreferredServerConfig)
 	Describe("Pluto", testPluto)
@@ -177,7 +180,7 @@ func testNATTPortConfiguration() {
 	})
 }
 
-func testConnectToEndpointWithNATInfo(natInfo *natdiscovery.NATEndpointInfo) {
+func testConnectToEndpointWithNATInfo(natInfo *natdiscovery.NATEndpointInfo, authMode libreswan.AuthMode) {
 	natInfo.Endpoint.Spec.ClusterID = "east"
 	natInfo.Endpoint.Spec.CableName = "submariner-cable-east-192-68-2-1"
 	natInfo.Endpoint.Spec.BackendConfig = map[string]string{subv1.UDPPortConfig: remoteNATTPort}
@@ -196,36 +199,54 @@ func testConnectToEndpointWithNATInfo(natInfo *natdiscovery.NATEndpointInfo) {
 		Expect(ip).To(Equal(natInfo.UseIP))
 
 		t.assertActiveConnection(natInfo)
+
+		if authMode == libreswan.AuthModeCert {
+			data, err := os.ReadFile(libreswan.SubmarinerConfPath())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(ContainSubstring("conn " + natInfo.Endpoint.Spec.CableName))
+
+			t.cmdExecutor.AwaitCommand(nil, "ipsec", "--add")
+		}
 	}
 
 	testBiDirectionalMode := func() {
 		connectToEndpoint()
 
-		family := k8snet.IPFamilyOfString(natInfo.UseIP)
-		t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), natInfo.UseIP,
-			t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
-			localNATTPort, remoteNATTPort)
-		t.cmdExecutor.AwaitCommand(nil, "whack", "--initiate")
+		if authMode == libreswan.AuthModePSK {
+			family := k8snet.IPFamilyOfString(natInfo.UseIP)
+			t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), natInfo.UseIP,
+				t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
+				localNATTPort, remoteNATTPort)
+			t.cmdExecutor.AwaitCommand(nil, "whack", "--initiate")
+		} else {
+			t.cmdExecutor.AwaitCommand(nil, "ipsec", "whack", "--initiate")
+		}
 	}
 
 	testClientMode := func() {
 		connectToEndpoint()
 
-		family := k8snet.IPFamilyOfString(natInfo.UseIP)
-		t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), natInfo.UseIP,
-			t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
-			Not(ContainElement(localNATTPort)), remoteNATTPort)
-		t.cmdExecutor.AwaitCommand(nil, "whack", "--initiate")
+		if authMode == libreswan.AuthModePSK {
+			family := k8snet.IPFamilyOfString(natInfo.UseIP)
+			t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), natInfo.UseIP,
+				t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
+				Not(ContainElement(localNATTPort)), remoteNATTPort)
+			t.cmdExecutor.AwaitCommand(nil, "whack", "--initiate")
+		} else {
+			t.cmdExecutor.AwaitCommand(nil, "ipsec", "whack", "--initiate")
+		}
 	}
 
 	testServerMode := func() {
 		connectToEndpoint()
 
-		family := k8snet.IPFamilyOfString(natInfo.UseIP)
-		t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), "%any",
-			t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
-			localNATTPort, Not(ContainElement(remoteNATTPort)))
-		t.cmdExecutor.EnsureNoCommand("whack", "--initiate")
+		if authMode == libreswan.AuthModePSK {
+			family := k8snet.IPFamilyOfString(natInfo.UseIP)
+			t.cmdExecutor.AwaitCommand(nil, "whack", t.endpointSpec.GetPrivateIP(family), "%any",
+				t.endpointSpec.ParseSubnets(family)[0].String(), natInfo.Endpoint.Spec.ParseSubnets(family)[0].String(),
+				localNATTPort, Not(ContainElement(remoteNATTPort)))
+			t.cmdExecutor.EnsureNoCommand("whack", "--initiate")
+		}
 	}
 
 	When("only the local side prefers to be a server", func() {
@@ -290,7 +311,7 @@ func testConnectToEndpoint() {
 			},
 			UseIP:     "172.93.2.1",
 			UseFamily: k8snet.IPv4,
-		})
+		}, libreswan.AuthModePSK)
 	})
 
 	Context("IPv6", func() {
@@ -303,7 +324,7 @@ func testConnectToEndpoint() {
 			},
 			UseIP:     "2003:db8:3333:4444:5555:6666:7777:8888",
 			UseFamily: k8snet.IPv6,
-		})
+		}, libreswan.AuthModePSK)
 	})
 
 	Context("dual stack", func() {
@@ -316,12 +337,55 @@ func testConnectToEndpoint() {
 			},
 			UseIP:     "172.93.2.1",
 			UseFamily: k8snet.IPv4,
+		}, libreswan.AuthModePSK)
+	})
+
+	Context("cert auth mode", func() {
+		BeforeEach(func() {
+			os.Setenv(authModeEnvVar, "cert")
+			DeferCleanup(func() {
+				os.Unsetenv(authModeEnvVar)
+			})
 		})
+
+		testConnectToEndpointWithNATInfo(&natdiscovery.NATEndpointInfo{
+			Endpoint: subv1.Endpoint{
+				Spec: subv1.EndpointSpec{
+					PrivateIPs: []string{"192.68.2.1"},
+					Subnets:    []string{"20.0.0.0/16"},
+				},
+			},
+			UseIP:     "172.93.2.1",
+			UseFamily: k8snet.IPv4,
+		}, libreswan.AuthModeCert)
 	})
 }
 
-func testDisconnectFromEndpoint() {
+func testDisconnectFromEndpoint(authMode libreswan.AuthMode) {
 	t := newTestDriver()
+
+	BeforeEach(func() {
+		os.Setenv(authModeEnvVar, string(authMode))
+		DeferCleanup(func() {
+			os.Unsetenv(authModeEnvVar)
+		})
+	})
+
+	verifyConnectionRemoved := func(name string, expNoneRemaining bool) {
+		if authMode == libreswan.AuthModeCert {
+			if expNoneRemaining {
+				_, err := os.Stat(libreswan.SubmarinerConfPath())
+				Expect(errors.Is(err, os.ErrNotExist)).To(BeTrue())
+			} else {
+				data, err := os.ReadFile(libreswan.SubmarinerConfPath())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).NotTo(ContainSubstring("conn " + name))
+			}
+		} else {
+			t.cmdExecutor.AwaitCommand(nil, "whack", "--delete")
+			t.cmdExecutor.Clear()
+		}
+	}
 
 	It("should remove the Connection", func() {
 		natInfo1 := &natdiscovery.NATEndpointInfo{
@@ -376,19 +440,16 @@ func testDisconnectFromEndpoint() {
 
 		Expect(t.driver.DisconnectFromEndpoint(&types.SubmarinerEndpoint{Spec: natInfo1.Endpoint.Spec}, k8snet.IPv4)).To(Succeed())
 		t.assertNoActiveConnection(natInfo1)
-		t.cmdExecutor.AwaitCommand(nil, "whack", "--delete")
-		t.cmdExecutor.Clear()
+		verifyConnectionRemoved(natInfo1.Endpoint.Spec.CableName, false)
 
 		Expect(t.driver.DisconnectFromEndpoint(&types.SubmarinerEndpoint{Spec: natInfoIPv6.Endpoint.Spec}, k8snet.IPv6)).To(Succeed())
 		t.assertNoActiveConnection(natInfoIPv6)
-		t.cmdExecutor.AwaitCommand(nil, "whack", "--delete")
 		t.assertActiveConnection(natInfo2)
-		t.cmdExecutor.Clear()
+		verifyConnectionRemoved(natInfoIPv6.Endpoint.Spec.CableName, false)
 
 		Expect(t.driver.DisconnectFromEndpoint(&types.SubmarinerEndpoint{Spec: natInfo2.Endpoint.Spec}, k8snet.IPv4)).To(Succeed())
 		t.assertNoActiveConnection(natInfo2)
-		t.cmdExecutor.AwaitCommand(nil, "whack", "--delete")
-		t.cmdExecutor.Clear()
+		verifyConnectionRemoved(natInfo2.Endpoint.Spec.CableName, true)
 	})
 }
 
