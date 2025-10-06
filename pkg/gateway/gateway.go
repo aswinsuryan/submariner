@@ -286,6 +286,15 @@ func (g *gatewayType) onStartedLeading(ctx context.Context) {
 
 	logger.Info("Leadership acquired - starting controllers")
 
+	if g.SigningRequestor == nil {
+		signingRequestor, err := certificate.StartSigningRequestor(g.SyncerConfig, ctx.Done())
+		if err != nil {
+			g.fatalError <- errors.Wrap(err, "error creating SigningRequestor")
+		}
+
+		g.SigningRequestor = signingRequestor
+	}
+
 	if err := g.cableEngine.StartEngine(g.SigningRequestor); err != nil {
 		g.fatalError <- errors.Wrap(err, "error starting the cable engine")
 		return
@@ -340,10 +349,6 @@ func (g *gatewayType) onStoppedLeading(ctx context.Context) {
 	}
 
 	g.cableEngine.Stop()
-
-	if g.SigningRequestor != nil {
-		_ = g.SigningRequestor.Uninstall(ctx)
-	}
 
 	logger.Info("Controllers stopped")
 
@@ -421,7 +426,11 @@ func (g *gatewayType) initCableHealthChecker() {
 }
 
 func (g *gatewayType) uninstall(ctx context.Context) error {
-	err := g.cableEngine.StartEngine(nil)
+	if g.SigningRequestor != nil {
+		_ = g.SigningRequestor.Uninstall(ctx)
+	}
+
+	err := g.cableEngine.StartEngine(g.SigningRequestor)
 	if err != nil {
 		// As we are in the process of cleaning up, ignore any initialization errors.
 		logger.Errorf(err, "Error starting the cable driver")

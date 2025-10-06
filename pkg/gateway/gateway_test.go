@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
+	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/fake"
 	"github.com/submariner-io/admiral/pkg/federate"
 	. "github.com/submariner-io/admiral/pkg/gomega"
@@ -55,10 +56,26 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	k8snet "k8s.io/utils/net"
 )
 
 const publicIP = "1.2.3.4"
+
+type mockSigningRequestor struct{}
+
+func (m *mockSigningRequestor) Issue(ctx context.Context, name string, sanIPs []string, callback certificate.OnSignedFn,
+) error {
+	return callback(map[string][]byte{})
+}
+
+func (m *mockSigningRequestor) Uninstall(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSigningRequestor) Remove(ctx context.Context, name string) error {
+	return nil
+}
 
 var _ = Describe("Run", func() {
 	t := newTestDriver()
@@ -257,7 +274,8 @@ func newTestDriver() *testDriver {
 		t.expectedRunErr = nil
 		t.remoteIPCounter = 1
 
-		restMapper := test.GetRESTMapperFor(&submarinerv1.Endpoint{}, &submarinerv1.Cluster{}, &submarinerv1.Gateway{}, &corev1.Node{})
+		restMapper := test.GetRESTMapperFor(&submarinerv1.Endpoint{}, &submarinerv1.Cluster{},
+			&submarinerv1.Gateway{}, &corev1.Node{}, &corev1.Secret{})
 
 		t.dynClient = dynamicfake.NewSimpleDynamicClient(scheme.Scheme)
 		t.kubeClient = k8sfake.NewClientset()
@@ -276,10 +294,17 @@ func newTestDriver() *testDriver {
 				CableDriver:        fakecable.DriverName,
 			},
 			SyncerConfig: broker.SyncerConfig{
+				LocalRestConfig: &rest.Config{
+					Host: "https://localhost:6443",
+				},
+				BrokerRestConfig: &rest.Config{
+					Host: "https://localhost:6443",
+				},
 				LocalClient:     t.dynClient,
 				BrokerClient:    t.dynClient,
 				BrokerNamespace: "broker-ns",
 				RestMapper:      restMapper,
+				Scheme:          scheme.Scheme,
 			},
 			WatcherConfig: watcher.Config{
 				RestMapper: restMapper,
@@ -288,6 +313,7 @@ func newTestDriver() *testDriver {
 			SubmarinerClient:     submfake.NewSimpleClientset(),
 			KubeClient:           t.kubeClient,
 			LeaderElectionClient: t.kubeClient,
+			SigningRequestor:     &mockSigningRequestor{},
 			NewCableEngine: func(_ *types.SubmarinerCluster, lep *submendpoint.Local) cableengine.Engine {
 				t.cableEngine.LocalEndPoint = &types.SubmarinerEndpoint{Spec: *lep.Spec()}
 				return t.cableEngine

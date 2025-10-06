@@ -19,7 +19,6 @@ limitations under the License.
 package libreswan_test
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +31,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
-	"github.com/submariner-io/admiral/pkg/certificate"
 	fakecommand "github.com/submariner-io/admiral/pkg/command/fake"
 	subv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/cable"
@@ -52,26 +50,6 @@ const (
 	localNATTPort  = "1234"
 	remoteNATTPort = "6789"
 )
-
-type mockSigningRequestor struct{}
-
-func (m *mockSigningRequestor) Issue(ctx context.Context, name string, sanIPs []string, callback certificate.OnSignedFn) error {
-	certData := map[string][]byte{
-		"tls.crt": []byte("mock-tls-cert"),
-		"tls.key": []byte("mock-tls-key"),
-		"ca.crt":  []byte("mock-ca-cert"),
-	}
-
-	return callback(certData)
-}
-
-func (m *mockSigningRequestor) Uninstall(ctx context.Context) error {
-	return nil
-}
-
-func (m *mockSigningRequestor) Remove(ctx context.Context, name string) error {
-	return nil
-}
 
 var _ = Describe("Libreswan", func() {
 	Describe("NATT port configuration", testNATTPortConfiguration)
@@ -95,6 +73,31 @@ var _ = Describe("Libreswan", func() {
 
 		Specify("Cleanup should succeed", func() {
 			Expect(t.driver.Cleanup()).To(Succeed())
+		})
+
+		When("an invalid authentication mode is specified", func() {
+			BeforeEach(func() {
+				os.Setenv(authModeEnvVar, "invalid")
+				DeferCleanup(func() {
+					os.Unsetenv(authModeEnvVar)
+				})
+
+				t.expectErr = true
+			})
+
+			It("should return an error", func() {
+				endpointSpec := subv1.EndpointSpec{
+					ClusterID:  "local",
+					CableName:  "submariner-cable-local-192-68-1-1",
+					PrivateIPs: []string{"192.68.1.1"},
+					Subnets:    []string{"10.0.0.0/16"},
+				}
+				localEndpoint := endpoint.NewLocal(&endpointSpec, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), "")
+
+				_, err := libreswan.NewLibreswan(localEndpoint, &types.SubmarinerCluster{}, &mockSigningRequestor{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("invalid authentication mode"))
+			})
 		})
 	})
 })
@@ -803,6 +806,7 @@ type testDriver struct {
 	cmdExecutor   *fakecommand.Executor
 	driver        cable.Driver
 	plutoCtlFile  *os.File
+	expectErr     bool
 }
 
 func newTestDriver() *testDriver {
@@ -835,7 +839,12 @@ func newTestDriver() *testDriver {
 		var err error
 
 		t.driver, err = libreswan.NewLibreswan(t.localEndpoint, &types.SubmarinerCluster{}, &mockSigningRequestor{})
-		Expect(err).NotTo(HaveOccurred())
+
+		if t.expectErr {
+			Expect(err).To(HaveOccurred())
+		} else {
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	return t
@@ -887,167 +896,4 @@ func (t *testDriver) assertNoActiveConnection(natInfo *natdiscovery.NATEndpointI
 		UsingIP:  natInfo.UseIP,
 		UsingNAT: natInfo.UseNAT,
 	}))
-}
-
-func testCertificate() {
-	t := newTestDriver()
-
-	Context("Authentication mode", func() {
-		When("certificate authentication mode is enabled", func() {
-			It("should create driver with certificate mode", func() {
-				const authModeEnvVar = "CE_IPSEC_AUTHMODE"
-				os.Setenv(authModeEnvVar, "cert")
-				defer os.Unsetenv(authModeEnvVar)
-
-				endpointSpec := subv1.EndpointSpec{
-					ClusterID:  "local",
-					CableName:  "submariner-cable-local-192-68-1-1",
-					PrivateIPs: []string{"192.68.1.1"},
-					Subnets:    []string{"10.0.0.0/16"},
-				}
-				localEndpoint := endpoint.NewLocal(&endpointSpec, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), "")
-
-				driver, err := libreswan.NewLibreswan(localEndpoint, &types.SubmarinerCluster{}, &mockSigningRequestor{})
-				Expect(err).NotTo(HaveOccurred())
-
-				Expect(driver).NotTo(BeNil())
-				Expect(driver.GetName()).To(Equal("libreswan"))
-			})
-		})
-
-		When("invalid authentication mode is specified", func() {
-			It("should return an error", func() {
-				const authModeEnvVar = "CE_IPSEC_AUTHMODE"
-				os.Setenv(authModeEnvVar, "invalid")
-				defer os.Unsetenv(authModeEnvVar)
-
-				endpointSpec := subv1.EndpointSpec{
-					ClusterID:  "local",
-					CableName:  "submariner-cable-local-192-68-1-1",
-					PrivateIPs: []string{"192.68.1.1"},
-					Subnets:    []string{"10.0.0.0/16"},
-				}
-				localEndpoint := endpoint.NewLocal(&endpointSpec, dynamicfake.NewSimpleDynamicClient(scheme.Scheme), "")
-
-				_, err := libreswan.NewLibreswan(localEndpoint, &types.SubmarinerCluster{}, &mockSigningRequestor{})
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("invalid authentication mode"))
-			})
-		})
-	})
-
-	Context("Certificate loading", func() {
-		var cmdExecutor *fakecommand.Executor
-
-		BeforeEach(func() {
-			cmdExecutor = fakecommand.New()
-		})
-
-		AfterEach(func() {
-			cmdExecutor.Clear()
-		})
-
-		It("should successfully load certificates into NSS database", func() {
-			controller := libreswan.NewCertificateHandler("test-cluster")
-			Expect(controller).NotTo(BeNil())
-
-			certData := map[string][]byte{
-				"ca.crt":  []byte("-----BEGIN CERTIFICATE-----\nMOCK_CA_CERT\n-----END CERTIFICATE-----"),
-				"tls.crt": []byte("-----BEGIN CERTIFICATE-----\nMOCK_CLIENT_CERT\n-----END CERTIFICATE-----"),
-				"tls.key": []byte("-----BEGIN PRIVATE KEY-----\nMOCK_CLIENT_KEY\n-----END PRIVATE KEY-----"),
-			}
-
-			err := controller.OnSignedCallback(certData)
-			Expect(err).NotTo(HaveOccurred())
-
-			cmdExecutor.AwaitCommand(ContainSubstring("certutil"), "-N", "-d", "sql:/var/lib/ipsec/nss", "--empty-password")
-			cmdExecutor.AwaitCommand(ContainSubstring("certutil"), "-A", "-d", "sql:/var/lib/ipsec/nss",
-				"-n", "ca-cert", "-t", "C,,", "-i", "-", "-a")
-			cmdExecutor.AwaitCommand(ContainSubstring("certutil"), "-A", "-d", "sql:/var/lib/ipsec/nss",
-				"-n", "client-cert", "-t", "C,,", "-i", "-", "-a")
-			cmdExecutor.AwaitCommand(ContainSubstring("certutil"), "-A", "-d", "sql:/var/lib/ipsec/nss",
-				"-n", "client-key", "-t", "u,u,u", "-i", "-", "-a")
-		})
-
-		It("should handle NSS database initialization failure", func() {
-			cmdExecutor = fakecommand.NewWithInterceptor(func(cmd *exec.Cmd) fakecommand.InterceptorFuncs {
-				if fakecommand.CmdMatches(cmd, ContainSubstring("certutil"), "-N", "-d", "sql:/var/lib/ipsec/nss", "--empty-password") {
-					return fakecommand.InterceptorFuncs{Run: func() error {
-						return errors.New("database init failed")
-					}}
-				}
-
-				return fakecommand.InterceptorFuncs{}
-			})
-
-			controller := libreswan.NewCertificateHandler("test-cluster")
-			Expect(controller).NotTo(BeNil())
-
-			certData := map[string][]byte{
-				"ca.crt":  []byte("-----BEGIN CERTIFICATE-----\nMOCK_CA_CERT\n-----END CERTIFICATE-----"),
-				"tls.crt": []byte("-----BEGIN CERTIFICATE-----\nMOCK_CLIENT_CERT\n-----END CERTIFICATE-----"),
-				"tls.key": []byte("-----BEGIN PRIVATE KEY-----\nMOCK_CLIENT_KEY\n-----END PRIVATE KEY-----"),
-			}
-
-			err := controller.OnSignedCallback(certData)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("failed to initialize NSS database"))
-		})
-
-		It("should handle certificate loading failure", func() {
-			cmdExecutor = fakecommand.NewWithInterceptor(func(cmd *exec.Cmd) fakecommand.InterceptorFuncs {
-				if fakecommand.CmdMatches(cmd, ContainSubstring("certutil"), "-A", "-d", "sql:/var/lib/ipsec/nss",
-					"-n", "ca-cert", "-t", "C,,", "-i", "-", "-a") {
-					return fakecommand.InterceptorFuncs{Run: func() error {
-						return errors.New("certificate load failed")
-					}}
-				}
-
-				return fakecommand.InterceptorFuncs{}
-			})
-
-			controller := libreswan.NewCertificateHandler("test-cluster")
-			Expect(controller).NotTo(BeNil())
-
-			certData := map[string][]byte{
-				"ca.crt":  []byte("-----BEGIN CERTIFICATE-----\nMOCK_CA_CERT\n-----END CERTIFICATE-----"),
-				"tls.crt": []byte("-----BEGIN CERTIFICATE-----\nMOCK_CLIENT_CERT\n-----END CERTIFICATE-----"),
-				"tls.key": []byte("-----BEGIN PRIVATE KEY-----\nMOCK_CLIENT_KEY\n-----END PRIVATE KEY-----"),
-			}
-
-			err := controller.OnSignedCallback(certData)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("failed to load certificates into NSS database"))
-		})
-	})
-
-	Context("Certificate connection", func() {
-		When("connecting and disconnecting in certificate mode", func() {
-			It("should create and remove certificate-based connection", func() {
-				os.Setenv("CE_IPSEC_AUTHMODE", "cert")
-				defer os.Unsetenv("CE_IPSEC_AUTHMODE")
-
-				Expect(t.driver.Init()).To(Succeed())
-
-				natInfo := &natdiscovery.NATEndpointInfo{
-					Endpoint: subv1.Endpoint{
-						Spec: subv1.EndpointSpec{
-							ClusterID:  "remote",
-							CableName:  "submariner-cable-remote-192-68-2-1",
-							PrivateIPs: []string{"192.68.2.1"},
-							Subnets:    []string{"20.0.0.0/16"},
-						},
-					},
-					UseIP:     "172.93.2.1",
-					UseFamily: k8snet.IPv4,
-				}
-
-				_, err := t.driver.ConnectToEndpoint(natInfo)
-				Expect(err).To(Succeed())
-
-				err = t.driver.DisconnectFromEndpoint(&types.SubmarinerEndpoint{Spec: natInfo.Endpoint.Spec}, k8snet.IPv4)
-				Expect(err).To(Succeed())
-			})
-		})
-	})
 }

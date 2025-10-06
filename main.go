@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
-	"github.com/submariner-io/admiral/pkg/certificate"
 	"github.com/submariner-io/admiral/pkg/http"
 	"github.com/submariner-io/admiral/pkg/log"
 	"github.com/submariner-io/admiral/pkg/log/kzerolog"
@@ -126,14 +125,6 @@ func main() {
 
 	ctx := signals.SetupSignalHandler()
 
-	signingRequestor, err := certificate.StartSigningRequestor(broker.SyncerConfig{
-		LocalRestConfig: restConfig,
-		LocalClient:     dynClient,
-		RestMapper:      restMapper,
-		Scheme:          scheme.Scheme,
-	}, ctx.Done())
-	logger.FatalOnError(err, "Error creating SigningRequestor")
-
 	gw, err := gateway.New(ctx, &gateway.Config{
 		LeaderElectionConfig: gateway.LeaderElectionConfig{
 			LeaseDuration: time.Duration(gwLeadershipConfig.LeaseDuration) * time.Second,
@@ -155,7 +146,6 @@ func main() {
 		LeaderElectionClient: leClient,
 		NewCableEngine:       cableengine.NewEngine,
 		NewNATDiscovery:      natdiscovery.New,
-		SigningRequestor:     signingRequestor,
 	})
 	logger.FatalOnError(err, "Error creating gateway instance")
 
