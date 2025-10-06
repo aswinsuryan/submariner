@@ -34,7 +34,21 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-var certLogger = log.Logger{Logger: logf.Log.WithName("certificate-controller")}
+var certLogger = log.Logger{Logger: logf.Log.WithName("CertHandler")}
+
+// CertificateHandler handles NSS database operations for certificates.
+type CertificateHandler struct {
+	clusterID    string
+	nssDBDir     string
+	lastCertHash string
+}
+
+func NewCertificateHandler(clusterID string) *CertificateHandler {
+	return &CertificateHandler{
+		clusterID: clusterID,
+		nssDBDir:  "/var/lib/ipsec/nss",
+	}
+}
 
 func initNSSDatabase(nssDBDir string) error {
 	if _, err := os.Stat(nssDBDir + "/cert9.db"); err == nil {
@@ -44,7 +58,7 @@ func initNSSDatabase(nssDBDir string) error {
 
 	certLogger.Info("NSS database does not exist, initializing new database")
 
-	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	//nolint:gosec // certutil args are from trusted config
@@ -114,20 +128,6 @@ func loadPrivateKey(nssDBDir string, keyData []byte, nickname string) error {
 	return nil
 }
 
-// CertificateHandler handles NSS database operations for certificates.
-type CertificateHandler struct {
-	clusterID    string
-	nssDBDir     string
-	lastCertHash string
-}
-
-func NewCertificateHandler(clusterID string) *CertificateHandler {
-	return &CertificateHandler{
-		clusterID: clusterID,
-		nssDBDir:  "/var/lib/ipsec/nss",
-	}
-}
-
 func (c *CertificateHandler) Cleanup() {
 	certLogger.Info("Cleaning up certificate handler")
 	c.cleanupCertificateFromNSS()
@@ -180,12 +180,10 @@ func (c *CertificateHandler) OnSignedCallback(secretData map[string][]byte) erro
 	certLogger.Info("Certificate ready, loading into NSS database")
 
 	if err := initNSSDatabase(c.nssDBDir); err != nil {
-		certLogger.Error(err, "Failed to initialize NSS database")
 		return errors.Wrap(err, "failed to initialize NSS database")
 	}
 
 	if err := loadCertificatesIntoNSS(c.nssDBDir, tlsCert, tlsKey, caCert); err != nil {
-		certLogger.Error(err, "Failed to load certificates into NSS database")
 		return errors.Wrap(err, "failed to load certificates into NSS database")
 	}
 
