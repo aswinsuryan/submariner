@@ -75,21 +75,14 @@ func initNSSDatabase(nssDBDir string) error {
 
 func loadCertificatesIntoNSS(nssDBDir string, tlsCert, tlsKey, caCert []byte) error {
 	// Load CA certificate
-	if err := loadCertificate(nssDBDir, caCert, "ca-cert", "C,,", "c"); err != nil {
+	if err := loadCertificate(nssDBDir, caCert, "ca-cert", "CT,", "ca certificate"); err != nil {
 		return errors.Wrap(err, "failed to load CA certificate")
 	}
 
-	// Load client certificate
-	if err := loadCertificate(nssDBDir, tlsCert, "client-cert", "C,,", "c"); err != nil {
-		return errors.Wrap(err, "failed to load client certificate")
+	// Load client certificate and key using pk12util
+	if err := loadPrivateKey(nssDBDir, tlsCert, tlsKey, "client-cert"); err != nil {
+		return errors.Wrap(err, "failed to load client certificate with key")
 	}
-
-	// Load client private key
-	if err := loadPrivateKey(nssDBDir, tlsKey, "client-key"); err != nil {
-		return errors.Wrap(err, "failed to load client private key")
-	}
-
-	certLogger.Info("Certificates successfully loaded into NSS database")
 
 	return nil
 }
@@ -111,18 +104,63 @@ func loadCertificate(nssDBDir string, certData []byte, nickname, trustFlags, cer
 	return nil
 }
 
-func loadPrivateKey(nssDBDir string, keyData []byte, nickname string) error {
+func loadPrivateKey(nssDBDir string, certData, keyData []byte, nickname string) error {
+	// Write cert and key to temporary files
+	certFile, err := os.CreateTemp("", "submariner-cert-*.crt")
+	if err != nil {
+		return errors.Wrap(err, "failed to create temporary cert file")
+	}
+	defer os.Remove(certFile.Name())
+
+	if _, err := certFile.Write(certData); err != nil {
+		return errors.Wrap(err, "failed to write certificate to temporary file")
+	}
+	certFile.Close()
+
+	keyFile, err := os.CreateTemp("", "submariner-key-*.key")
+	if err != nil {
+		return errors.Wrap(err, "failed to create temporary key file")
+	}
+	defer os.Remove(keyFile.Name())
+
+	if _, err := keyFile.Write(keyData); err != nil {
+		return errors.Wrap(err, "failed to write key to temporary file")
+	}
+	keyFile.Close()
+
+	// Create PKCS#12 file with openssl
+	p12File, err := os.CreateTemp("", "submariner-client-*.p12")
+	if err != nil {
+		return errors.Wrap(err, "failed to create temporary pkcs12 file")
+	}
+	defer os.Remove(p12File.Name())
+	p12File.Close()
+
+	// Use empty password for PKCS#12
+	pkcs12Password := ""
+
 	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
 	defer cancel()
 
-	//nolint:gosec // certutil args are from trusted config
-	execCmd := exec.CommandContext(ctx, "certutil", "-A", "-d", "sql:"+nssDBDir, "-n", nickname, "-t", "u,u,u", "-i", "-", "-a")
-	execCmd.Stdin = bytes.NewReader(keyData)
-
-	cmd := command.New(execCmd)
-
+	//nolint:gosec // openssl args are from trusted config
+	opensslCmd := exec.CommandContext(ctx, "openssl", "pkcs12", "-export",
+		"-in", certFile.Name(),
+		"-inkey", keyFile.Name(),
+		"-out", p12File.Name(),
+		"-name", nickname,
+		"-passout", "pass:"+pkcs12Password)
+	cmd := command.New(opensslCmd)
 	if err := cmd.Run(); err != nil {
-		return errors.Wrap(err, "failed to load private key")
+		return errors.Wrap(err, "failed to create PKCS#12 file")
+	}
+
+	// Import PKCS#12 into NSS using pk12util
+	ctx, cancel = context.WithTimeout(context.TODO(), 30*time.Second)
+	defer cancel()
+	pk12Cmd := exec.CommandContext(ctx, "pk12util", "-i", p12File.Name(), "-d", "sql:"+nssDBDir, "-W", pkcs12Password)
+	cmd = command.New(pk12Cmd)
+	if err := cmd.Run(); err != nil {
+		return errors.Wrap(err, "failed to import PKCS#12 into NSS")
 	}
 
 	return nil
