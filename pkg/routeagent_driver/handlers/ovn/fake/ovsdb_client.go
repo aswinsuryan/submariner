@@ -279,3 +279,39 @@ func (c *modelConditionalAPI) Delete() ([]ovsdb.Operation, error) {
 
 	return []ovsdb.Operation{}, nil
 }
+
+func (c *modelConditionalAPI) Update(m model.Model, _ ...any) ([]ovsdb.Operation, error) {
+	c.client.mutex.Lock()
+	defer c.client.mutex.Unlock()
+
+	uuid := getUUID(m)
+	if uuid != "" {
+		t := reflect.TypeOf(m)
+		slice := c.client.models[t]
+
+		for i, item := range slice {
+			if getUUID(item) == uuid {
+				c.client.models[t][i] = m
+				return []ovsdb.Operation{}, nil
+			}
+		}
+	}
+
+	c.client.models[reflect.TypeOf(m)] = append(c.client.models[reflect.TypeOf(m)], m)
+
+	return []ovsdb.Operation{}, nil
+}
+
+func getUUID(m any) string {
+	val := reflect.ValueOf(m)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+
+	f := val.FieldByName("UUID")
+	if f.IsValid() {
+		return f.String()
+	}
+
+	return ""
+}

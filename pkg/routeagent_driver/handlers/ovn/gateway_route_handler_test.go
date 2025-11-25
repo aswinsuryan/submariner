@@ -167,7 +167,7 @@ func (t *gwRouteHandlerTestDriver) awaitGatewayRoute(ipFamily k8snet.IPFamily, s
 		}
 
 		g.Expect(gwRoute).NotTo(BeNil(), "GatewayRoute for IPv%s not found", ipFamily)
-	}).Within(time.Second * 3).Should(Succeed())
+	}).Within(time.Second * 5).Should(Succeed())
 
 	return gwRoute.Name
 }

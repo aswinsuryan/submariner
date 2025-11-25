@@ -182,6 +182,7 @@ func newHandlerTestDriver() *handlerTestDriver {
 
 		_, _ = t.ovsdbClient.Create(&nbdb.LogicalRouter{
 			Name: ovn.OVNClusterRouter,
+			UUID: "ovn_cluster_router",
 		})
 
 		t.netLink.SetupDefaultGateway(t.ipFamily, net.Interface{Name: "gw-intf"})
