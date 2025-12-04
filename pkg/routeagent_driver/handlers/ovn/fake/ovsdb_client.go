@@ -182,27 +182,34 @@ func (c *OVSDBClient) AwaitModel(m any) {
 	}).Should(Succeed())
 }
 
+func (c *OVSDBClient) EnsureModel(m any) {
+	Consistently(func(g Gomega) {
+		found, existing := c.hasModel(m)
+		g.Expect(found).To(BeTrue(), "OVSBD model not found: %s. Actual models: %v", resource.ToJSON(m), existing)
+	}).Should(Succeed())
+}
+
 func (c *OVSDBClient) AwaitNoModel(m any) {
-	Eventually(func() bool {
+	Eventually(func(g Gomega) {
 		found, _ := c.hasModel(m)
-		return found
-	}).Should(BeFalse(), "OVSBD model exists: %s", resource.ToJSON(m))
+		g.Expect(found).To(BeFalse(), "OVSBD model exists: %s", resource.ToJSON(m))
+	}).Should(Succeed())
 }
 
 func (c *OVSDBClient) EnsureNoModel(m any) {
-	Consistently(func() bool {
+	Consistently(func(g Gomega) {
 		found, _ := c.hasModel(m)
-		return found
-	}).Should(BeFalse(), "OVSBD model exists: %s", resource.ToJSON(m))
+		g.Expect(found).To(BeFalse(), "OVSBD model exists: %s", resource.ToJSON(m))
+	}).Should(Succeed())
 }
 
 func (c *OVSDBClient) EnsureNoModelsOfType(m any) {
-	Consistently(func() bool {
+	Consistently(func(g Gomega) {
 		c.mutex.Lock()
 		defer c.mutex.Unlock()
 
-		return len(c.models[reflect.TypeOf(m)]) == 0
-	}).Should(BeFalse(), "OVSBD models exist")
+		g.Expect(c.models[reflect.TypeOf(m)]).To(BeEmpty(), "OVSBD models exist")
+	}).Should(Succeed())
 }
 
 type noopConditionalAPI struct{}

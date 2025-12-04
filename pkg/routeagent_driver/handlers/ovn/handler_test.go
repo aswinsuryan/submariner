@@ -427,12 +427,9 @@ func (t *handlerTestDriver) testGatewayRoute(ipFamilySubnets []string, nonIPFami
 
 			test.CreateResource(client, gwRoute)
 
-			for _, cidr := range gwRoute.RoutePolicySpec.RemoteCIDRs {
-				t.ovsdbClient.AwaitModel(&nbdb.LogicalRouterPolicy{
-					Match:   cidr,
-					Nexthop: ptr.To(gwRoute.RoutePolicySpec.NextHops[0]),
-				})
+			t.awaitLogicalRouterPolicies(gwRoute.RoutePolicySpec.RemoteCIDRs, gwRoute.RoutePolicySpec.NextHops[0])
 
+			for _, cidr := range gwRoute.RoutePolicySpec.RemoteCIDRs {
 				t.ovsdbClient.AwaitModel(&nbdb.LogicalRouterStaticRoute{
 					IPPrefix: cidr,
 				})
@@ -440,12 +437,9 @@ func (t *handlerTestDriver) testGatewayRoute(ipFamilySubnets []string, nonIPFami
 
 			Expect(client.Delete(context.Background(), gwRoute.Name, metav1.DeleteOptions{})).To(Succeed())
 
-			for _, cidr := range gwRoute.RoutePolicySpec.RemoteCIDRs {
-				t.ovsdbClient.AwaitNoModel(&nbdb.LogicalRouterPolicy{
-					Match:   cidr,
-					Nexthop: ptr.To(gwRoute.RoutePolicySpec.NextHops[0]),
-				})
+			t.awaitNoLogicalRouterPolicies(gwRoute.RoutePolicySpec.RemoteCIDRs, gwRoute.RoutePolicySpec.NextHops[0])
 
+			for _, cidr := range gwRoute.RoutePolicySpec.RemoteCIDRs {
 				t.ovsdbClient.AwaitNoModel(&nbdb.LogicalRouterStaticRoute{
 					IPPrefix: cidr,
 				})
@@ -468,24 +462,6 @@ func (t *handlerTestDriver) testNonGatewayRoutes(ipFamilyNextHop string, ipFamil
 	nonIPFamilyCIDRs []string,
 ) {
 	When("NonGatewayRoutes are created, updated and deleted", func() {
-		verifyLogicalRouterPolicies := func(ngr *submarinerv1.NonGatewayRoute, nextHop string) {
-			for _, cidr := range ngr.RoutePolicySpec.RemoteCIDRs {
-				t.ovsdbClient.AwaitModel(&nbdb.LogicalRouterPolicy{
-					Match:   cidr,
-					Nexthop: ptr.To(nextHop),
-				})
-			}
-		}
-
-		verifyNoLogicalRouterPolicies := func(ngr *submarinerv1.NonGatewayRoute, nextHop string) {
-			for _, cidr := range ngr.RoutePolicySpec.RemoteCIDRs {
-				t.ovsdbClient.AwaitNoModel(&nbdb.LogicalRouterPolicy{
-					Match:   cidr,
-					Nexthop: ptr.To(nextHop),
-				})
-			}
-		}
-
 		It("should correctly reconcile OVN router policies", func() {
 			client := t.dynClient.Resource(submarinerv1.SchemeGroupVersion.WithResource("nongatewayroutes")).Namespace(testing.Namespace)
 
@@ -503,7 +479,7 @@ func (t *handlerTestDriver) testNonGatewayRoutes(ipFamilyNextHop string, ipFamil
 
 			test.CreateResource(client, nonGWRoute1)
 
-			verifyLogicalRouterPolicies(nonGWRoute1, ipFamilyNextHop)
+			t.awaitLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
 
 			By("Creating second NonGatewayRoute")
 
@@ -519,8 +495,8 @@ func (t *handlerTestDriver) testNonGatewayRoutes(ipFamilyNextHop string, ipFamil
 
 			test.CreateResource(client, nonGWRoute2)
 
-			verifyLogicalRouterPolicies(nonGWRoute1, ipFamilyNextHop)
-			verifyLogicalRouterPolicies(nonGWRoute2, ipFamilyNextHop)
+			t.awaitLogicalRouterPolicies(nonGWRoute2.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
+			t.ensureLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
 
 			By("Updating NextHop for first NonGatewayRoute")
 
@@ -534,9 +510,9 @@ func (t *handlerTestDriver) testNonGatewayRoutes(ipFamilyNextHop string, ipFamil
 
 			test.UpdateResource(client, nonGWRoute1)
 
-			verifyLogicalRouterPolicies(nonGWRoute1, ipFamilyNextHop)
-			verifyNoLogicalRouterPolicies(nonGWRoute1, prevNextHop)
-			verifyNoLogicalRouterPolicies(nonGWRoute2, prevNextHop)
+			t.awaitLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
+			t.awaitNoLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, prevNextHop)
+			t.awaitNoLogicalRouterPolicies(nonGWRoute2.RoutePolicySpec.RemoteCIDRs, prevNextHop)
 
 			By("Updating NextHop for second NonGatewayRoute")
 
@@ -544,14 +520,15 @@ func (t *handlerTestDriver) testNonGatewayRoutes(ipFamilyNextHop string, ipFamil
 
 			test.UpdateResource(client, nonGWRoute2)
 
-			verifyLogicalRouterPolicies(nonGWRoute1, ipFamilyNextHop)
-			verifyLogicalRouterPolicies(nonGWRoute2, ipFamilyNextHop)
+			t.awaitLogicalRouterPolicies(nonGWRoute2.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
+			t.ensureLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
 
 			By("Deleting first NonGatewayRoute")
 
 			Expect(client.Delete(context.Background(), nonGWRoute1.Name, metav1.DeleteOptions{})).To(Succeed())
 
-			verifyNoLogicalRouterPolicies(nonGWRoute1, ipFamilyNextHop)
+			t.awaitNoLogicalRouterPolicies(nonGWRoute1.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
+			t.ensureLogicalRouterPolicies(nonGWRoute2.RoutePolicySpec.RemoteCIDRs, ipFamilyNextHop)
 
 			By("Creating NonGatewayRoute for other IP family")
 
@@ -712,4 +689,31 @@ func (t *handlerTestDriver) testIntraClusterRoutingDisabled() {
 	It("should not try to process NonGatewayRoutes", func() {
 		assert.EnsureNoActionsForResource(&t.dynClient.Fake, "nongatewayroutes", "watch")
 	})
+}
+
+func (t *handlerTestDriver) awaitLogicalRouterPolicies(cidrs []string, nextHop string) {
+	for _, cidr := range cidrs {
+		t.ovsdbClient.AwaitModel(&nbdb.LogicalRouterPolicy{
+			Match:   cidr,
+			Nexthop: ptr.To(nextHop),
+		})
+	}
+}
+
+func (t *handlerTestDriver) ensureLogicalRouterPolicies(cidrs []string, nextHop string) {
+	for _, cidr := range cidrs {
+		t.ovsdbClient.EnsureModel(&nbdb.LogicalRouterPolicy{
+			Match:   cidr,
+			Nexthop: ptr.To(nextHop),
+		})
+	}
+}
+
+func (t *handlerTestDriver) awaitNoLogicalRouterPolicies(cidrs []string, nextHop string) {
+	for _, cidr := range cidrs {
+		t.ovsdbClient.AwaitNoModel(&nbdb.LogicalRouterPolicy{
+			Match:   cidr,
+			Nexthop: ptr.To(nextHop),
+		})
+	}
 }
