@@ -25,3 +25,11 @@ make markdownlint
 ### Konflux Component Setup
 
 @.agents/workflows/konflux-component-setup.md
+
+### Issue to PR
+
+@.agents/workflows/issue-to-pr.md
+
+## Project Context
+
+@.agents/context/project-overview.md

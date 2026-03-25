@@ -15,3 +15,6 @@ scripts/broker-info.subm*
 .shflags
 Makefile.shipyard
 Makefile.dapper
+.agents/state/
+__pycache__/
+*.pyc
